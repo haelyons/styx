@@ -18,12 +18,24 @@ import time
 
 ROOT = os.path.expanduser("~/.cache/styx")
 HERE = os.path.dirname(os.path.abspath(__file__))
-SANDBOX = json.dumps(dict(sandbox=dict(enabled=True, autoAllowBashIfSandboxed=True, allowUnsandboxedCommands=False)))
+HOME = os.path.expanduser("~")
+ACCOUNT = os.environ.get("CLAUDE_CONFIG_DIR", f"{HOME}/.claude")
+
+
+def jail(ep):
+    """bubblewrap for Claude Code, whose own sandbox does not start where the kernel restricts
+    nested user namespaces: the system read-only, the home directory empty but for the CLI, its
+    account and the episode. The network stays. Codex runs under its own sandbox: no network,
+    writes only in the episode, everything readable."""
+    return ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", HOME,
+            "--ro-bind", f"{HOME}/.local/share/claude", f"{HOME}/.local/share/claude", "--bind", ACCOUNT, ACCOUNT,
+            "--bind-try", f"{HOME}/.claude.json", f"{HOME}/.claude.json", "--tmpfs", f"{ACCOUNT}/projects",
+            "--bind", ep, ep, "--die-with-parent"]
 
 
 def claude(model, prompt, ep):
     cmd = ["-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
-           "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "", "--settings", SANDBOX,
+           "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "",
            "--add-dir", f"{ep}/spool", "--allowedTools", "Read", "Write", "Edit", "Glob", "Grep", "Bash"]
     return cmd + (["--model", model] if model else [])
 
@@ -52,14 +64,14 @@ async def run(agent, model, prompt, files, ep, minutes):
         shutil.copy(f, f"{ep}/work/")
     shutil.copy(f"{HERE}/client.py", f"{ep}/bin/styx")
     os.chmod(f"{ep}/bin/styx", 0o755)
-    exe = shutil.which(agent)
+    exe = os.path.realpath(shutil.which(agent))
     env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDECODE", "CLAUDE_CODE", "VIRTUAL_ENV"))}
     env.update(PATH=f"{ep}/bin:/usr/bin:/bin", STYX_SPOOL=f"{ep}/spool")
     broker = await asyncio.create_subprocess_exec(sys.executable, "-m", "styx.pool", "serve", f"{ep}/spool", f"{ep}/ledger.jsonl")
     t = time.time()
     with open(f"{ep}/transcript.jsonl", "w") as out, open(f"{ep}/stderr.txt", "w") as err:
         p = await asyncio.create_subprocess_exec(
-            exe, *globals()[agent](model, prompt, ep), cwd=f"{ep}/work", env=env,
+            *(jail(ep) if agent == "claude" else []), exe, *globals()[agent](model, prompt, ep), cwd=f"{ep}/work", env=env,
             stdin=asyncio.subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True,
         )
         try:

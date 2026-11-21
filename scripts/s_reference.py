@@ -1,7 +1,7 @@
 """What does each cell of tasks/post.py cost when we post it ourselves, on each GPU of the pool, at
 each batch size given?
 
-python -m scripts.s_reference [batch ...]     appends to out/reference.jsonl
+python -m scripts.s_reference [batch ...]     appends to out/reference.jsonl and uploads it
 """
 
 import json
@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-from styx import pool
+from styx import data, pool
 from tasks.post import CELLS
 
 LEDGER, LIMIT = "out/reference-ledger.jsonl", "60m"
@@ -41,6 +41,7 @@ def main():
                 f.write(json.dumps(r) + "\n")
             print(r["cell"], r["gpu"], r["batch"], r["state"], r.get("seconds"), r.get("peak_gpu_mb"), r["loss"], flush=True)
             del mine[job]
+    data.upload("out", f"reference/{open('COMMIT').read().strip()}", ["reference*.jsonl"])
 
 
 if __name__ == "__main__":

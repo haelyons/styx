@@ -20,11 +20,13 @@ our own posting of the same workload.
   `git log -1 --format=%cd-%h --date=format:%Y%m%d > COMMIT`
 - Agents reach the pool only through `styx`. They are never given `sky`.
 - The agent's working directory is outside this repo. `out/` holds the reference answers.
+- Agents write only in their episode. Claude Code cannot read this repo but has the network. Codex has no network but can read this repo. `peeked` records any mention of the answers.
 - Every job records seconds, exit code, peak GPU memory and GPU busy share on the node.
 - The next commit message carries the run's evidence and names the commit that ran.
 
 ## Data
-- Results go to the private HF dataset as `<task>/<date>-<commit>/`. No prose.
+- Every run uploads its results to the HF dataset `hal2k/styx-data` as `<task>/<date>-<commit>/`. No prose.
+- `styx/data.py` is the only way there. It replaces every value of `.env` with its name.
 
 ## Limits
 - Never print credentials.
