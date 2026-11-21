@@ -11,7 +11,8 @@ setup: |
   ~/.local/bin/uv venv ~/venv --python 3.12
   source ~/venv/bin/activate
   ~/.local/bin/uv pip install torch transformers datasets accelerate peft hf_transfer
-  ~/.local/bin/uv pip install --reinstall-package torch torch --index-url https://download.pytorch.org/whl/cu128
+  ~/.local/bin/uv pip install --reinstall-package torch torch torchvision --index-url https://download.pytorch.org/whl/cu128
+  ~/.local/bin/uv pip install scikit-learn pandas pillow
   for m in Qwen/Qwen2.5-0.5B Qwen/Qwen2.5-1.5B Qwen/Qwen2.5-3B Qwen/Qwen2.5-7B; do
     HF_HUB_ENABLE_HF_TRANSFER=1 hf download $m
   done

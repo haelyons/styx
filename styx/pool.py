@@ -171,6 +171,28 @@ def finalize(path):
     return out
 
 
+def ours(path, todo, cwd):
+    """Posts each (gpu, command) of ours from `cwd` under one ledger, limit 60m. Yields every job's
+    record, with its uid and why it did not succeed, and its log as it ends; the log is also kept
+    in logs/ beside the ledger."""
+    env, t0, logs = dict(os.environ, STYX_LEDGER=os.path.abspath(path)), time.time(), os.path.join(os.path.dirname(path), "logs")
+    for gpu, cmd in todo:
+        subprocess.run([sys.executable, "-m", "styx.pool", "post", "--gpu", gpu, "--time", f"{MAX_S}s", "--", cmd], cwd=cwd, env=env, check=True)
+    mine = {j: p for j, p in posts(path).items() if p["t"] >= t0}
+    while mine:
+        time.sleep(30)
+        for job, p in list(mine.items()):
+            r = record(p, {})
+            if r["state"] in LIVE.values():
+                continue
+            log = text(POOL[p["gpu"]]["cluster"], int(job.split("-")[1]))
+            cause = None if r["state"] == "SUCCEEDED" else next((l[:200] for l in reversed(log) if "Error" in l), r["state"].lower())
+            with open(f"{logs}/{p['uid']}.txt", "w") as f:
+                f.write("\n".join(log) + "\n")
+            yield dict(r, uid=p["uid"], cause=cause), log
+            del mine[job]
+
+
 def serve(spool, path):
     """Runs each call left in the spool as `styx <argv>` in the directory posted with it."""
     env = dict(os.environ, STYX_LEDGER=path, STYX_SERVED="1")
