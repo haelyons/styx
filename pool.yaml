@@ -1,0 +1,21 @@
+# One pool node per GPU type. The cluster name carries the type; styx/pool.py lists the types.
+#   sky launch -c styx-a10  pool.yaml --gpus A10:1  -i 60 --down
+#   sky launch -c styx-a100 pool.yaml --gpus A100:1 -i 60 --down
+# The node goes down after an hour without jobs. Jobs see the models and the dataset already on disk.
+name: styx-pool
+resources:
+  cloud: lambda
+workdir: .
+setup: |
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ~/.local/bin/uv venv ~/venv --python 3.12
+  source ~/venv/bin/activate
+  ~/.local/bin/uv pip install torch transformers datasets accelerate peft hf_transfer
+  for m in Qwen/Qwen2.5-0.5B Qwen/Qwen2.5-1.5B Qwen/Qwen2.5-3B Qwen/Qwen2.5-7B; do
+    HF_HUB_ENABLE_HF_TRANSFER=1 hf download $m
+  done
+  python -c "from datasets import load_dataset; load_dataset('Salesforce/wikitext', 'wikitext-103-raw-v1', split='train')"
+  mkdir -p ~/jobs && cp styx/node.py ~/node.py
+run: |
+  source ~/venv/bin/activate
+  nvidia-smi -L && uv pip list 2>/dev/null | grep -i -E "^(torch|transformers|datasets|peft|accelerate) "

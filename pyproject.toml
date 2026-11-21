@@ -1,0 +1,15 @@
+[project]
+name = "styx"
+version = "0"
+requires-python = ">=3.11"
+dependencies = ["skypilot[lambda]==0.14.2", "inspect-ai", "huggingface_hub"]
+
+[project.scripts]
+styx = "styx.pool:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["styx"]
