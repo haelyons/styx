@@ -11,6 +11,7 @@ episode directory outside this repo.
 import asyncio
 import json
 import os
+import resource
 import shutil
 import signal
 import sys
@@ -21,6 +22,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
 ACCOUNT = os.environ.get("CLAUDE_CONFIG_DIR", f"{HOME}/.claude")
 LOGIN = f"{HOME}/.codex/auth.json"
+# What an agent allowed to compute here gets: 4 threads, 8 GB, and a Python 3.12 with the CPU wheels
+# of torch 2.11.0 and torchvision 0.26.0, scikit-learn, pandas and pillow.
+CAGE = ["systemd-run", "--user", "--scope", "--quiet", "-p", "MemoryMax=8G", "-p", "MemorySwapMax=0", "taskset", "-c", "0-3"]
+CPU_ENV = f"{ROOT}/cpu-env"
 
 
 def jail(ep):
@@ -31,18 +36,20 @@ def jail(ep):
     return ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", HOME,
             "--ro-bind", f"{HOME}/.local/share/claude", f"{HOME}/.local/share/claude", "--bind", ACCOUNT, ACCOUNT,
             "--bind-try", f"{HOME}/.claude.json", f"{HOME}/.claude.json", "--tmpfs", f"{ACCOUNT}/projects",
+            "--ro-bind-try", CPU_ENV, CPU_ENV, "--ro-bind-try", f"{HOME}/.local/share/uv/python", f"{HOME}/.local/share/uv/python",
             "--bind", ep, ep, "--die-with-parent"]
 
 
-def claude(model, prompt, ep):
+def claude(model, prompt, ep, shell):
     cmd = ["-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
            "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "",
-           "--add-dir", f"{ep}/spool", "--allowedTools", "Read", "Write", "Edit", "Glob", "Grep", "Bash"]
+           "--add-dir", f"{ep}/spool", "--allowedTools", "Read", "Glob", "Grep"] + (["Write", "Edit", "Bash"] if shell else [])
     return cmd + (["--model", model] if model else [])
 
 
-def codex(model, prompt, ep):
-    cmd = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "workspace-write",
+def codex(model, prompt, ep, shell):
+    """Without a shell Codex still runs commands, but can write nothing."""
+    cmd = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "workspace-write" if shell else "read-only",
            "--add-dir", f"{ep}/spool", "-o", f"{ep}/answer.txt"]
     return cmd + (["-m", model] if model else []) + [prompt]
 
@@ -60,14 +67,31 @@ def answer(agent, ep):
     return text, dict(usage=[e["usage"] for e in events if e.get("type") == "turn.completed"])
 
 
-async def run(agent, model, prompt, files, ep, minutes):
-    """One episode. Returns the agent's last message, its seconds, and whether it ran out of time."""
+def episode(task, run, agent, model, sample, epoch):
+    return f"{ROOT}/{task}/{run}/{agent}{'-' + model.replace('/', '_') if model else ''}/{sample}-{epoch}"
+
+
+def names(ep, words):
+    """Whether the agent's transcript names any of `words`, which say where the answers are."""
+    text = open(f"{ep}/transcript.jsonl").read()
+    return any(w in text for w in words)
+
+
+async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
+    """One episode. `tools` is what the agent has besides reading its files: "pool" a shell with
+    styx, "cpu" a shell inside CAGE with CPU_ENV's python, "none" neither. Returns the agent's last
+    message, its seconds, the CPU seconds of its process tree and whether it ran out of time."""
     for d in ("work", "spool", "bin"):
         os.makedirs(f"{ep}/{d}")
     for f in files:
-        shutil.copy(f, f"{ep}/work/")
-    shutil.copy(f"{HERE}/client.py", f"{ep}/bin/styx")
-    os.chmod(f"{ep}/bin/styx", 0o755)
+        shutil.copytree(f, f"{ep}/work/{os.path.basename(f)}") if os.path.isdir(f) else shutil.copy(f, f"{ep}/work/")
+    if tools == "pool":
+        shutil.copy(f"{HERE}/client.py", f"{ep}/bin/styx")
+        os.chmod(f"{ep}/bin/styx", 0o755)
+        broker = await asyncio.create_subprocess_exec(sys.executable, "-m", "styx.pool", "serve", f"{ep}/spool", f"{ep}/ledger.jsonl")
+    if tools == "cpu":
+        for name in ("python", "python3"):
+            os.symlink(f"{CPU_ENV}/bin/python", f"{ep}/bin/{name}")
     exe = os.path.realpath(shutil.which(agent))
     env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDECODE", "CLAUDE_CODE", "VIRTUAL_ENV"))}
     env.update(PATH=f"{ep}/bin:/usr/bin:/bin", STYX_SPOOL=f"{ep}/spool")
@@ -75,11 +99,12 @@ async def run(agent, model, prompt, files, ep, minutes):
         os.makedirs(f"{ep}/home/.codex")
         shutil.copy(LOGIN, f"{ep}/home/.codex/auth.json")
         env.update(HOME=f"{ep}/home")
-    broker = await asyncio.create_subprocess_exec(sys.executable, "-m", "styx.pool", "serve", f"{ep}/spool", f"{ep}/ledger.jsonl")
-    t = time.time()
+    cmd = (CAGE if tools == "cpu" else []) + (jail(ep) if agent == "claude" else []) + [exe, *globals()[agent](model, prompt, ep, tools != "none")]
+    used = lambda: sum(resource.getrusage(resource.RUSAGE_CHILDREN)[:2])
+    t, cpu = time.time(), used()
     with open(f"{ep}/transcript.jsonl", "w") as out, open(f"{ep}/stderr.txt", "w") as err:
         p = await asyncio.create_subprocess_exec(
-            *(jail(ep) if agent == "claude" else []), exe, *globals()[agent](model, prompt, ep), cwd=f"{ep}/work", env=env,
+            *cmd, cwd=f"{ep}/work", env=env,
             stdin=asyncio.subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True,
         )
         try:
@@ -88,10 +113,11 @@ async def run(agent, model, prompt, files, ep, minutes):
         except asyncio.TimeoutError:
             os.killpg(p.pid, signal.SIGKILL)
             late = True
-    broker.terminate()
+    if tools == "pool":
+        broker.terminate()
     if agent == "codex":  # a login Codex renewed goes back; none stays in the episode
         if open(f"{ep}/home/.codex/auth.json").read() != open(LOGIN).read():
             shutil.copy(f"{ep}/home/.codex/auth.json", LOGIN)
         shutil.rmtree(f"{ep}/home")
     text, usage = answer(agent, ep)
-    return dict(answer=text, agent_s=round(time.time() - t, 1), late=late, exit=p.returncode, **usage)
+    return dict(answer=text, agent_s=round(time.time() - t, 1), cpu_s=round(used() - cpu, 1), late=late, exit=p.returncode, **usage)

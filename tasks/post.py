@@ -48,7 +48,7 @@ def reference():
 @solver
 def posts(agent, model, minutes):
     async def solve(state, generate):
-        ep = f"{agents.ROOT}/post/{RUN}/{agent}{'-' + model.replace('/', '_') if model else ''}/{state.sample_id}-{state.epoch}"
+        ep = agents.episode("post", RUN, agent, model, state.sample_id, state.epoch)
         r = await agents.run(agent, model, state.input_text, [f"{REPO}/jobs/loss.py"], ep, minutes)
         state.output = ModelOutput.from_content(model=f"{agent}/{model or 'default'}", content=r.pop("answer"))
         state.metadata.update(episode=ep, run=r)
@@ -68,7 +68,6 @@ def cost():
         said = re.findall(r"LOSS=([0-9.]+)", state.output.completion)
         calls = [json.loads(l) for l in open(f"{ep}/ledger.jsonl")] if os.path.exists(f"{ep}/ledger.jsonl") else []
         count = lambda s: sum(j["state"] == s for j in jobs)
-        seen = open(f"{ep}/transcript.jsonl").read()
         value = dict(
             correct=bool(said) and abs(float(said[-1].rstrip(".")) - mine["loss"]) <= TOLERANCE,
             jobs=len(jobs), failed=count("FAILED"), timeout=count("TIMEOUT"), cancelled=count("CANCELLED"),
@@ -76,7 +75,7 @@ def cost():
             usd=sum(j.get("usd", 0) for j in jobs), usd_ours=mine["usd"],
             gpu_s=sum(j.get("seconds", 0) for j in jobs), gpu_s_ours=mine["seconds"],
             agent_s=state.metadata["run"]["agent_s"], late=state.metadata["run"]["late"], calls=len(calls),
-            peeked=any(a in seen for a in ANSWERS),
+            peeked=agents.names(ep, ANSWERS),
         )
         row = {**state.metadata["run"], **value, "cell": state.sample_id, "epoch": state.epoch, "said": said[-1] if said else None, "ours": mine, "posted": jobs}
         with open(f"{ep}/episode.json", "w") as f:
