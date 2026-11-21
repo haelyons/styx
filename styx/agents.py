@@ -20,6 +20,7 @@ ROOT = os.path.expanduser("~/.cache/styx")
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
 ACCOUNT = os.environ.get("CLAUDE_CONFIG_DIR", f"{HOME}/.claude")
+LOGIN = f"{HOME}/.codex/auth.json"
 
 
 def jail(ep):
@@ -67,6 +68,10 @@ async def run(agent, model, prompt, files, ep, minutes):
     exe = os.path.realpath(shutil.which(agent))
     env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDECODE", "CLAUDE_CODE", "VIRTUAL_ENV"))}
     env.update(PATH=f"{ep}/bin:/usr/bin:/bin", STYX_SPOOL=f"{ep}/spool")
+    if agent == "codex":  # a home with its login and nothing else of the user's: no AGENTS.md, config or skills
+        os.makedirs(f"{ep}/home/.codex")
+        shutil.copy(LOGIN, f"{ep}/home/.codex/auth.json")
+        env.update(HOME=f"{ep}/home")
     broker = await asyncio.create_subprocess_exec(sys.executable, "-m", "styx.pool", "serve", f"{ep}/spool", f"{ep}/ledger.jsonl")
     t = time.time()
     with open(f"{ep}/transcript.jsonl", "w") as out, open(f"{ep}/stderr.txt", "w") as err:
@@ -81,5 +86,9 @@ async def run(agent, model, prompt, files, ep, minutes):
             os.killpg(p.pid, signal.SIGKILL)
             late = True
     broker.terminate()
+    if agent == "codex":  # a login Codex renewed goes back; none stays in the episode
+        if open(f"{ep}/home/.codex/auth.json").read() != open(LOGIN).read():
+            shutil.copy(f"{ep}/home/.codex/auth.json", LOGIN)
+        shutil.rmtree(f"{ep}/home")
     text, usage = answer(agent, ep)
     return dict(answer=text, agent_s=round(time.time() - t, 1), late=late, exit=p.returncode, **usage)

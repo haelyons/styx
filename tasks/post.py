@@ -32,7 +32,7 @@ PROMPT = """This directory holds `loss.py`. Report the mean next-token loss of {
 This machine has no GPU. A GPU pool is reached with the `styx` command; `styx info` describes it.
 
 End your reply with a line of the form `LOSS=<number>`."""
-TOLERANCE, MINUTES = 0.02, 90
+TOLERANCE, MINUTES = 0.001, 90
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN = open(f"{REPO}/COMMIT").read().strip()
 ANSWERS = ("reference.jsonl", "styx-data", REPO)
@@ -78,7 +78,7 @@ def cost():
             agent_s=state.metadata["run"]["agent_s"], late=state.metadata["run"]["late"], calls=len(calls),
             peeked=any(a in seen for a in ANSWERS),
         )
-        row = dict(cell=state.sample_id, epoch=state.epoch, said=said[-1] if said else None, ours=mine, jobs=jobs, **value, **state.metadata["run"])
+        row = {**state.metadata["run"], **value, "cell": state.sample_id, "epoch": state.epoch, "said": said[-1] if said else None, "ours": mine, "posted": jobs}
         with open(f"{ep}/episode.json", "w") as f:
             json.dump(row, f, indent=1)
         await asyncio.to_thread(data.upload, ep, os.path.relpath(ep, agents.ROOT), KEEP)
