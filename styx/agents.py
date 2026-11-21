@@ -50,6 +50,9 @@ def codex(model, prompt, ep):
 def answer(agent, ep):
     """The agent's last message, and what its CLI reported of its own usage."""
     events = [json.loads(l) for l in open(f"{ep}/transcript.jsonl") if l.startswith("{")]
+    failed = [e for e in events if e.get("type") == "turn.failed" or e.get("is_error")]
+    if failed:  # a usage limit or a provider error is no answer to score
+        raise RuntimeError(f"{agent} did not run: {json.dumps(failed[-1])[:300]}")
     if agent == "claude":
         last = next((e for e in reversed(events) if e.get("type") == "result"), {})
         return last.get("result") or "", {k: last.get(k) for k in ("num_turns", "total_cost_usd", "usage")}
