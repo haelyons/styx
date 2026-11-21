@@ -33,8 +33,8 @@ This machine has no GPU. A GPU pool is reached with the `styx` command; `styx in
 
 End your reply with a line of the form `LOSS=<number>`."""
 TOLERANCE, MINUTES = 0.02, 90
-RUN = open("COMMIT").read().strip()
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RUN = open(f"{REPO}/COMMIT").read().strip()
 ANSWERS = ("reference.jsonl", "styx-data", REPO)
 KEEP = ("ledger.jsonl", "transcript.jsonl", "stderr.txt", "answer.txt", "episode.json", "work/*")
 
