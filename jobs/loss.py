@@ -32,6 +32,7 @@ def main():
     ap.add_argument("--batch", type=int, default=16)
     a = ap.parse_args()
     dev = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"device {dev}", flush=True)
     x = chunks(AutoTokenizer.from_pretrained(a.model), a.docs, a.ctx)
     m = AutoModelForCausalLM.from_pretrained(a.model, torch_dtype=torch.bfloat16).to(dev).eval()
     total, t, said = 0.0, time.time(), 0
