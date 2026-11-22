@@ -15,7 +15,7 @@ setup: |
   curl -LsSf https://astral.sh/uv/install.sh | sh
   ~/.local/bin/uv venv ~/vllm --python 3.12
   ~/.local/bin/uv pip install -p ~/vllm/bin/python vllm hf_transfer --torch-backend=auto
-  HF_HUB_ENABLE_HF_TRANSFER=1 ~/vllm/bin/hf download $MODEL
+  HF_HUB_ENABLE_HF_TRANSFER=1 ~/vllm/bin/hf download $MODEL --exclude "original/*" "metal/*"
 run: |
   nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
   timeout ${HOURS}h ~/vllm/bin/vllm serve $MODEL --served-model-name $(basename $MODEL) --port 8000 \

@@ -21,6 +21,7 @@ setup: |
   ~/.local/bin/uv pip install -p ~/.cache/styx/cpu-env/bin/python torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cpu
   ~/.local/bin/uv pip install -p ~/.cache/styx/cpu-env/bin/python scikit-learn pandas pillow tqdm
   curl -fsSL https://opencode.ai/install | bash
+  (cd /tmp && ~/.opencode/bin/opencode run -m opencode/deepseek-v4.1-flash-free "Reply OK" > /dev/null)  # its first use writes into ~/.opencode, which the jail keeps read-only
   ~/venv/bin/python -c "
   import zipfile, os
   from huggingface_hub import HfFileSystem

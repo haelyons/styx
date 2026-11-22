@@ -222,10 +222,10 @@ async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
     if agent == "codex" and open(f"{ep}/home/.codex/auth.json").read() != open(LOGIN).read():
         shutil.copy(f"{ep}/home/.codex/auth.json", LOGIN)  # a login Codex renewed goes back
     shutil.rmtree(f"{ep}/home", ignore_errors=True)  # no login stays in the episode
-    if p.returncode and not late and not os.path.getsize(f"{ep}/transcript.jsonl"):
-        raise RuntimeError(f"{agent} did not run: {open(f'{ep}/stderr.txt').read()[:300]}")
     if limit and await limit:
         raise RuntimeError("opencode did not run: usage limit reached")
+    if p.returncode and not late and not os.path.getsize(f"{ep}/transcript.jsonl"):
+        raise RuntimeError(f"{agent} did not run: {open(f'{ep}/stderr.txt').read()[:300]}")
     seconds = round(time.time() - t, 1)
     text, usage = answer(agent, ep)
     return dict(answer=text, agent_s=seconds, cpu_s=await meter if meter else None, late=late, exit=p.returncode, host=os.uname().nodename, **usage)
