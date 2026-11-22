@@ -34,7 +34,7 @@ CAGE = ["systemd-run", "--user", "--scope", "--quiet", "-p", "MemoryMax=8G", "-p
 CPU_ENV = f"{ROOT}/cpu-env"
 # Models we serve ourselves (serve.yaml), by a name of ours: {"h100": "http://127.0.0.1:8001/v1"}.
 # OpenCode reaches one as <name>/<model>.
-SERVED = json.loads(os.environ.get("STYX_SERVED", "{}"))
+ENDPOINTS = json.loads(os.environ.get("STYX_ENDPOINTS", "{}"))
 
 
 # What of the home directory each jailed CLI needs: its install, and where it keeps its account.
@@ -195,8 +195,8 @@ async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
             account(f"{ep}/home/opencode.db")
         allow = {"*": "allow", "webfetch": "deny", "websearch": "deny", **({} if tools != "none" else {"bash": "deny", "edit": "deny"})}
         name, _, served = model.partition("/")
-        ours = {name: dict(npm="@ai-sdk/openai-compatible", options=dict(baseURL=SERVED[name], apiKey="none"),
-                           models={served: dict(tool_call=True, reasoning=True, limit=dict(context=131072, output=32768))})} if name in SERVED else {}
+        ours = {name: dict(npm="@ai-sdk/openai-compatible", options=dict(baseURL=ENDPOINTS[name], apiKey="none"),
+                           models={served: dict(tool_call=True, reasoning=True, limit=dict(context=131072, output=32768))})} if name in ENDPOINTS else {}
         with open(f"{ep}/opencode.json", "w") as f:
             json.dump(dict(autoupdate=False, share="disabled", permission=allow, provider=ours), f)
         env.update(OPENCODE_CONFIG=f"{ep}/opencode.json")

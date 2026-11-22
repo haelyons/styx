@@ -2,8 +2,9 @@
 # inference speed. The endpoint is reached through an ssh tunnel and never opened to the network.
 #   sky launch -c styx-h100 serve.yaml --gpus H100:1 -i 60 --down
 #   sky launch -c styx-b200 serve.yaml --gpus B200:1 -i 60 --down
+#   sky exec styx-h100 serve.yaml --gpus H100:1 -d      starts serving again; without --gpus the job is given no GPU
 #   ssh -N -L 8001:localhost:8000 styx-h100 &   ssh -N -L 8002:localhost:8000 styx-b200 &
-#   STYX_SERVED='{"h100": "http://127.0.0.1:8001/v1", "b200": "http://127.0.0.1:8002/v1"}' inspect eval ... -T agent=opencode -T model=h100/gpt-oss-120b
+#   STYX_ENDPOINTS='{"h100": "http://127.0.0.1:8001/v1", "b200": "http://127.0.0.1:8002/v1"}' inspect eval ... -T agent=opencode -T model=h100/gpt-oss-120b
 # Serving stops after HOURS, and the machine goes down an hour later.
 name: styx-serve
 resources:
@@ -15,9 +16,10 @@ setup: |
   curl -LsSf https://astral.sh/uv/install.sh | sh
   ~/.local/bin/uv venv ~/vllm --python 3.12
   # Lambda's driver is 570: CUDA 12. vLLM's later releases are built for CUDA 13 only.
-  ~/.local/bin/uv pip install -p ~/vllm/bin/python vllm==0.32.0 hf_transfer --torch-backend=cu129 --extra-index-url https://wheels.vllm.ai/0.32.0/cu129 --index-strategy unsafe-best-match
+  ~/.local/bin/uv pip install -p ~/vllm/bin/python vllm==0.32.0 hf_transfer ninja --torch-backend=cu129 --extra-index-url https://wheels.vllm.ai/0.32.0/cu129 --index-strategy unsafe-best-match
   HF_HUB_ENABLE_HF_TRANSFER=1 ~/vllm/bin/hf download $MODEL --exclude "original/*" "metal/*"
 run: |
   nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
-  timeout ${HOURS}h ~/vllm/bin/vllm serve $MODEL --served-model-name $(basename $MODEL) --port 8000 \
+  source ~/vllm/bin/activate  # FlashInfer builds its kernels at start and looks for ninja on PATH
+  timeout ${HOURS}h vllm serve $MODEL --served-model-name $(basename $MODEL) --port 8000 \
     --max-model-len 131072 --max-num-seqs 2 --gpu-memory-utilization 0.95 --tool-call-parser openai --enable-auto-tool-choice

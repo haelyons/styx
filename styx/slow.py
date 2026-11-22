@@ -5,7 +5,9 @@ python -m styx.slow <port> <upstream> <factor>     python -m styx.slow 8002 http
 """
 
 import http.client
+import queue
 import sys
+import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -28,11 +30,21 @@ class Slow(BaseHTTPRequestHandler):
                 self.send_header(k, v)
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
-        while chunk := reply.read1(65536):
-            time.sleep(max(0, start + FACTOR * (time.time() - start) - time.time()))
-            self.wfile.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
+        arrived = queue.Queue()  # read as it comes, so that holding one chunk back does not date the next
+
+        def read():
+            while chunk := reply.read1(65536):
+                arrived.put((time.time(), chunk))
+            arrived.put((time.time(), b""))
+
+        threading.Thread(target=read, daemon=True).start()
+        while True:
+            at, chunk = arrived.get()
+            time.sleep(max(0, start + FACTOR * (at - start) - time.time()))
+            self.wfile.write(b"%x\r\n%s\r\n" % (len(chunk), chunk) if chunk else b"0\r\n\r\n")
             self.wfile.flush()
-        self.wfile.write(b"0\r\n\r\n")
+            if not chunk:
+                break
 
     do_GET = do_POST = relay
 
