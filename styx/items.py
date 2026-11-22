@@ -30,7 +30,7 @@ VARIANTS = dict(full=[], epoch128=TENTH + [(ALL, "resolutions = [(128, 128)]")],
 
 def denoise(variant="full"):
     """A directory holding solution.py, changed as the variant says, description.md and input/."""
-    d = f"{ROOT}/denoise/{variant}"
+    d = f"{ROOT}/denoise/{variant}-{os.getpid()}"  # one per process: evals run side by side
     shutil.rmtree(d, ignore_errors=True)
     code = open(hf_hub_download(HUB, SCRIPT, repo_type="dataset", token=False)).read()
     for old, new in VARIANTS[variant]:
