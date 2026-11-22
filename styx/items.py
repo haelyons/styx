@@ -1,6 +1,6 @@
 """Items handed to agents that are built from published sources instead of files of this repo.
 
-denoise: four denoising-dirty-documents solutions from the HF dataset zjunlp/PredictBeforeExecute,
+denoise: five denoising-dirty-documents solutions from the HF dataset zjunlp/PredictBeforeExecute,
 with the task's public data as MLE-bench prepares it. Needs
 ~/.cache/styx/data/data/denoising-dirty-documents, that folder of the dataset's tasks/data.zip.
 """
@@ -17,9 +17,10 @@ CODE = "solutions_subset_15/denoising-dirty-documents/code/solution_"
 # Published there on an RTX 3090: seconds, test RMSE. The letters keep the run ids out of episodes.
 JOBS = dict(
     a="Automind_wo_knowledge_denoising-dirty-documents_13a296eb-c605-4737-bea2-edd07d49161a_run_c4121e82042c4af2b8755e35432adc9d",  # 324.3, 0.03719
-    b="Automind_wo_knowledge_denoising-dirty-documents_13a296eb-c605-4737-bea2-edd07d49161a_run_ceec4550855d47b18397376b17dc4e3a",  # 375.8, 0.31935
+    b="Automind_wo_knowledge_denoising-dirty-documents_13a296eb-c605-4737-bea2-edd07d49161a_run_ceec4550855d47b18397376b17dc4e3a",  # 375.8, 0.31935; stops at once on torch 2.11
     c="Aide_v3_denoising-dirty-documents_1a0c30a7-6820-4c1f-b0eb-09d6233500ed_run_61772fcd13da488aa84353a615f35047",  # 977.1, 0.55767
     d="Aide_o3mini_denoising-dirty-documents_535b5136-3a35-4d8e-97fd-8d21db8f6c38_run_86da71a0b3d74ebfaa74c1f6b4bc9137",  # 1265.9, 0.10309
+    e="Automind_wo_knowledge_denoising-dirty-documents_58d3c580-d6ab-4fea-b7a5-c8d115efda09_run_5d34b54f165f4cd1b3c91bede4b52f13",  # 2642.7, 0.30242
 )
 DATA = f"{ROOT}/data/data/denoising-dirty-documents/prepared"
 # ArchPilot's proxy for job a: the same code for one epoch on a tenth of the training data. The
