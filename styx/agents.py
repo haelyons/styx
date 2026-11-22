@@ -24,7 +24,8 @@ ACCOUNT = os.environ.get("CLAUDE_CONFIG_DIR", f"{HOME}/.claude")
 LOGIN = f"{HOME}/.codex/auth.json"
 # What an agent allowed to compute here gets: 4 threads, 8 GB, and a Python 3.12 with the CPU wheels
 # of torch 2.11.0 and torchvision 0.26.0, scikit-learn, pandas and pillow.
-CAGE = ["systemd-run", "--user", "--scope", "--quiet", "-p", "MemoryMax=8G", "-p", "MemorySwapMax=0", "taskset", "-c", "0-3"]
+# $STYX_CORES names other threads, so that evals of different agents can run side by side.
+CAGE = ["systemd-run", "--user", "--scope", "--quiet", "-p", "MemoryMax=8G", "-p", "MemorySwapMax=0", "taskset", "-c", os.environ.get("STYX_CORES", "0-3")]
 CPU_ENV = f"{ROOT}/cpu-env"
 
 
@@ -68,7 +69,7 @@ def claude(model, prompt, ep, shell):
 
 def codex(model, prompt, ep, shell):
     """Without a shell Codex still runs commands, but can write nothing."""
-    cmd = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "workspace-write" if shell else "read-only",
+    cmd = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-c", "model_reasoning_effort=medium", "-s", "workspace-write" if shell else "read-only",
            "--add-dir", f"{ep}/spool", "-o", f"{ep}/answer.txt"]
     return cmd + (["-m", model] if model else []) + [prompt]
 
