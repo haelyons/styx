@@ -110,16 +110,19 @@ def names(ep, words):
 
 
 async def burnt(p):
-    """CPU seconds used in the CAGE scope that process `p` runs in, read until it ends."""
+    """CPU seconds used in the CAGE scope that process `p` runs in, read until it ends. What the
+    agent left running in the scope is then killed."""
     await asyncio.sleep(1)
-    stat, seconds = "/sys/fs/cgroup" + open(f"/proc/{p.pid}/cgroup").read().strip().split("::")[1] + "/cpu.stat", 0
-    assert stat.endswith(".scope/cpu.stat"), stat
-    while p.returncode is None:
-        try:
-            seconds = int(open(stat).read().split()[1]) / 1e6
-        except FileNotFoundError:
-            break
-        await asyncio.sleep(2)
+    scope, seconds = "/sys/fs/cgroup" + open(f"/proc/{p.pid}/cgroup").read().strip().split("::")[1], 0
+    assert scope.endswith(".scope"), scope
+    try:
+        while p.returncode is None:
+            seconds = int(open(f"{scope}/cpu.stat").read().split()[1]) / 1e6
+            await asyncio.sleep(2)
+        with open(f"{scope}/cgroup.kill", "w") as f:
+            f.write("1")
+    except FileNotFoundError:
+        pass
     return round(seconds, 1)
 
 
