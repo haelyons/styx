@@ -27,8 +27,8 @@ and score; before any episode, what its own run will take.
   read this repo, and their shells have the network. Codex runs under its own sandbox: no network,
   but it can read this repo. None has a web tool. `peeked` records any mention of the answers.
 - An agent at a usage limit, or dead at start, is an error, never a scored answer.
-- Every agent runs under a memory limit of its own: 8 GB where it may compute, 4 GB elsewhere. Run no more episodes at once than the machine has memory for at those limits.
-- Evals side by side take separate CPU threads (`STYX_CORES`); a served model is used by one eval at a time.
+- Every agent runs under a memory limit of its own: 8 GB where it may compute, 2 GB elsewhere. Run no more episodes at once than the machine has memory for at those limits.
+- Evals side by side take separate CPU threads (`STYX_CORES`) and, on the post task, separate pools (`STYX_POOL`).
 - Every job records seconds, exit code, peak GPU memory and GPU busy share on the node.
 - The next commit message carries the run's evidence and names the commit that ran.
 

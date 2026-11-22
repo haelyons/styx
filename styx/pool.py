@@ -27,9 +27,11 @@ import sky
 
 from styx.node import MARK
 
+# $STYX_POOL names another pair of nodes of the same kinds (styx-a10-2, styx-a100-2), so that evals
+# side by side do not queue behind each other's jobs.
 POOL = {
-    "A10": dict(cluster="styx-a10", gb=24, usd_h=1.29),
-    "A100": dict(cluster="styx-a100", gb=40, usd_h=1.99),
+    "A10": dict(cluster="styx-a10" + os.environ.get("STYX_POOL", ""), gb=24, usd_h=1.29),
+    "A100": dict(cluster="styx-a100" + os.environ.get("STYX_POOL", ""), gb=40, usd_h=1.99),
 }
 MAX_S = 3600
 AGENT = ("info", "post", "status", "logs", "cancel")

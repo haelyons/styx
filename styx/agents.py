@@ -29,7 +29,6 @@ ACCOUNT = os.environ.get("CLAUDE_CONFIG_DIR", f"{HOME}/.claude")
 LOGIN = f"{HOME}/.codex/auth.json"
 # What an agent allowed to compute here gets: 4 threads, 8 GB, and a Python 3.12 with the CPU wheels
 # of torch 2.11.0 and torchvision 0.26.0, scikit-learn, pandas and pillow.
-# $STYX_CORES names other threads, so that evals of different agents can run side by side.
 # Every agent runs under a memory limit of its own, whatever it may use: the jail's home and /tmp
 # are memory, and an agent that fills them or its own heap is stopped there and not by the kernel
 # on the whole machine. What goes over is killed, and the agent goes on (OOMPolicy=continue).
@@ -38,7 +37,7 @@ def wall(gb):
     return ["systemd-run", "--user", "--scope", "--quiet", "-p", f"MemoryMax={gb}G", "-p", "MemorySwapMax=0", "-p", "OOMPolicy=continue"]
 
 
-WALL, CAGE = wall(4), wall(8) + ["taskset", "-c", os.environ.get("STYX_CORES", "0-3")]
+WALL, CAGE = wall(2), wall(8) + ["taskset", "-c", os.environ.get("STYX_CORES", "0-3")]
 CPU_ENV = f"{ROOT}/cpu-env"
 # Models we serve ourselves (serve.yaml), by a name of ours: {"h100": "http://127.0.0.1:8001/v1"}.
 # OpenCode reaches one as <name>/<model>.
