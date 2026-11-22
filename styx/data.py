@@ -4,6 +4,7 @@ one occurs in a file, the copy that is uploaded has its name instead.
 
 import fnmatch
 import glob
+import json
 import os
 import tempfile
 import time
@@ -67,7 +68,30 @@ def push(run, every=900):
             print(f"not pushed: {str(e)[:200]}", flush=True)
 
 
+def table():
+    """Sends episodes.jsonl, one row per scored episode of every run: where it is, its own numbers,
+    its first job, and how its seconds went."""
+    from styx import agents
+
+    os.makedirs(f"{ROOT}/table", exist_ok=True)
+    with open(f"{ROOT}/table/episodes.jsonl", "w") as out:
+        for scored in sorted(glob.glob(f"{ROOT}/*/*-*/*/*/episode.json")):
+            ep = os.path.dirname(scored)
+            task, run, agent, sample = ep.split("/")[-4:]
+            row, flat = json.load(open(scored)), dict(task=task, run=run, agent=agent, episode=sample)
+            for k, v in row.items():
+                if isinstance(v, dict):
+                    flat.update({f"{k}.{q}": x for q, x in v.items() if not isinstance(x, (dict, list))})
+                elif k == "posted":
+                    flat.update({f"first.{q}": v[0].get(q) for q in ("gpu", "limit_s", "state", "seconds", "cmd") if v})
+                else:
+                    flat[k] = v
+            out.write(json.dumps({**flat, **(agents.spent(ep) if os.path.exists(f"{ep}/clock.txt") else {})}) + "\n")  # the first runs kept no clock
+    upload(f"{ROOT}/table", "", ("episodes.jsonl",))
+
+
 if __name__ == "__main__":
     for run in glob.glob(f"{ROOT}/post/*-*") + glob.glob(f"{ROOT}/forecast/*-*"):
         print(run, flush=True)
         push(run, 0)
+    table()

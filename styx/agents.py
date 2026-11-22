@@ -135,6 +135,53 @@ def names(ep, words):
     return any(w in text for w in words)
 
 
+WAITS = re.compile(r"sleep|styx (wait|status|logs?)|until |while ")
+
+
+def spent(ep):
+    """How an episode's seconds went, from its transcript and clock: seconds inside tool calls (calls
+    side by side counted once), the part of them in commands that wait, the model seconds Claude
+    Code reports for itself (None from the other CLIs), and model turns."""
+    lines = open(f"{ep}/transcript.jsonl").read().splitlines()
+    clock = [float(x) for x in open(f"{ep}/clock.txt").read().split()]
+    calls, began, turns, api = [], {}, set(), None
+    for at, line in zip(clock, lines):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        kind, item, part = e.get("type"), e.get("item") or {}, e.get("part") or {}
+        if kind == "assistant":  # Claude Code
+            turns.add(e["message"].get("id"))
+            began.update({x["id"]: (at, json.dumps(x.get("input"))) for x in e["message"].get("content") or [] if x.get("type") == "tool_use"})
+        elif kind == "user":
+            content = e.get("message", {}).get("content") or []
+            done = [x["tool_use_id"] for x in content if isinstance(x, dict) and x.get("type") == "tool_result" and x.get("tool_use_id") in began]
+            calls += [(*began.pop(i), at) for i in done]
+        elif kind == "result":
+            api = e.get("duration_api_ms", 0) / 1000
+        elif kind == "item.started" and item.get("type") == "command_execution":  # Codex
+            began[item["id"]] = (at, item.get("command", ""))
+        elif kind == "item.completed" and item.get("id") in began:
+            calls.append((*began.pop(item["id"]), at))
+        elif kind == "item.completed" and item.get("type") in ("agent_message", "reasoning"):
+            turns.add(item["id"])
+        elif kind == "tool_use":  # OpenCode: one event when the call ends, carrying its start and end
+            took = part.get("state", {}).get("time") or {}
+            if took.get("start") and took.get("end"):
+                calls.append((at - (took["end"] - took["start"]) / 1000, json.dumps(part["state"].get("input")), at))
+        elif kind == "step_start":
+            turns.add(part.get("id"))
+
+    def covered(spans):
+        total = end = 0
+        for a, b in sorted(spans):
+            total, end = total + max(0, b - max(a, end)), max(end, b)
+        return round(total, 1)
+
+    return dict(tool_s=covered((a, b) for a, _, b in calls), wait_s=covered((a, b) for a, cmd, b in calls if WAITS.search(cmd)), model_s=api, turns=len(turns))
+
+
 async def burnt(p):
     """CPU seconds used in the scope that process `p` runs in, read until it ends. What the agent
     left running in the scope is then killed."""
