@@ -133,8 +133,10 @@ async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
         os.chmod(f"{ep}/bin/styx", 0o755)
         broker = await asyncio.create_subprocess_exec(sys.executable, "-m", "styx.pool", "serve", f"{ep}/spool", f"{ep}/ledger.jsonl")
     if tools == "cpu":
-        for name in ("python", "python3"):
-            os.symlink(f"{CPU_ENV}/bin/python", f"{ep}/bin/{name}")
+        for name in ("python", "python3"):  # a link would lose the environment's packages
+            with open(f"{ep}/bin/{name}", "w") as f:
+                f.write(f'#!/bin/sh\nexec {CPU_ENV}/bin/python "$@"\n')
+            os.chmod(f"{ep}/bin/{name}", 0o755)
     exe = os.path.realpath(shutil.which(agent))
     env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDECODE", "CLAUDE_CODE", "VIRTUAL_ENV"))}
     env.update(PATH=f"{ep}/bin:/usr/bin:/bin", STYX_SPOOL=f"{ep}/spool")
