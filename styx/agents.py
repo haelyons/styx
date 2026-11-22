@@ -68,8 +68,9 @@ def claude(model, prompt, ep, shell):
 
 
 def codex(model, prompt, ep, shell):
-    """Without a shell Codex still runs commands, but can write nothing."""
-    cmd = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-c", "model_reasoning_effort=medium", "-s", "workspace-write" if shell else "read-only",
+    """Without a shell Codex still runs commands, but can write nothing. Its web search is off, as the
+    web tools of the other two are."""
+    cmd = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-c", "model_reasoning_effort=medium", "-c", 'web_search="disabled"', "--disable", "apps", "-s", "workspace-write" if shell else "read-only",
            "--add-dir", f"{ep}/spool", "-o", f"{ep}/answer.txt"]
     return cmd + (["-m", model] if model else []) + [prompt]
 
@@ -148,7 +149,7 @@ async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
     if agent == "opencode":  # its account, and a config of ours in place of the user's
         os.makedirs(f"{ep}/home")
         account(f"{ep}/home/opencode.db")
-        allow = {"*": "allow"} if tools != "none" else {"*": "allow", "bash": "deny", "edit": "deny"}
+        allow = {"*": "allow", "webfetch": "deny", "websearch": "deny", **({} if tools != "none" else {"bash": "deny", "edit": "deny"})}
         with open(f"{ep}/opencode.json", "w") as f:
             json.dump(dict(autoupdate=False, share="disabled", permission=allow), f)
         env.update(OPENCODE_CONFIG=f"{ep}/opencode.json")
