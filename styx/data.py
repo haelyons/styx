@@ -22,7 +22,7 @@ def upload(src, dst, keep):
     """Sends the files of directory `src` whose relative path matches one of `keep` to <dataset>/<dst>.
     Hidden directories, __pycache__ and files over 50 MB stay behind."""
     names = {v.encode(): f"<{k}>".encode() for k, v in env().items()}
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(dir=os.path.dirname(os.path.abspath(src))) as tmp:  # /tmp has a quota here
         for root, _, files in os.walk(src):
             for rel in (os.path.relpath(f"{root}/{f}", src) for f in files):
                 hidden = "/." in f"/{os.path.dirname(rel)}" or "__pycache__" in rel
