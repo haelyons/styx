@@ -1,0 +1,22 @@
+# One open-weights model served on one GPU, so that the same agent can be run at more than one
+# inference speed. The endpoint is reached through an ssh tunnel and never opened to the network.
+#   sky launch -c styx-h100 serve.yaml --gpus H100:1 -i 60 --down
+#   sky launch -c styx-b200 serve.yaml --gpus B200:1 -i 60 --down
+#   ssh -N -L 8001:localhost:8000 styx-h100 &   ssh -N -L 8002:localhost:8000 styx-b200 &
+#   STYX_SERVED='{"h100": "http://127.0.0.1:8001/v1", "b200": "http://127.0.0.1:8002/v1"}' inspect eval ... -T agent=opencode -T model=h100/gpt-oss-120b
+# Serving stops after HOURS, and the machine goes down an hour later.
+name: styx-serve
+resources:
+  cloud: lambda
+envs:
+  MODEL: openai/gpt-oss-120b
+  HOURS: 8
+setup: |
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ~/.local/bin/uv venv ~/vllm --python 3.12
+  ~/.local/bin/uv pip install -p ~/vllm/bin/python vllm hf_transfer --torch-backend=auto
+  HF_HUB_ENABLE_HF_TRANSFER=1 ~/vllm/bin/hf download $MODEL
+run: |
+  nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+  timeout ${HOURS}h ~/vllm/bin/vllm serve $MODEL --served-model-name $(basename $MODEL) --port 8000 \
+    --max-model-len 131072 --max-num-seqs 2 --gpu-memory-utilization 0.95 --tool-call-parser openai --enable-auto-tool-choice
