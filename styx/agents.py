@@ -30,7 +30,15 @@ LOGIN = f"{HOME}/.codex/auth.json"
 # What an agent allowed to compute here gets: 4 threads, 8 GB, and a Python 3.12 with the CPU wheels
 # of torch 2.11.0 and torchvision 0.26.0, scikit-learn, pandas and pillow.
 # $STYX_CORES names other threads, so that evals of different agents can run side by side.
-CAGE = ["systemd-run", "--user", "--scope", "--quiet", "-p", "MemoryMax=8G", "-p", "MemorySwapMax=0", "taskset", "-c", os.environ.get("STYX_CORES", "0-3")]
+# Every agent runs under a memory limit of its own, whatever it may use: the jail's home and /tmp
+# are memory, and an agent that fills them or its own heap is stopped there and not by the kernel
+# on the whole machine. What goes over is killed, and the agent goes on (OOMPolicy=continue).
+# $STYX_CORES names other threads, so that evals of different agents can run side by side.
+def wall(gb):
+    return ["systemd-run", "--user", "--scope", "--quiet", "-p", f"MemoryMax={gb}G", "-p", "MemorySwapMax=0", "-p", "OOMPolicy=continue"]
+
+
+WALL, CAGE = wall(4), wall(8) + ["taskset", "-c", os.environ.get("STYX_CORES", "0-3")]
 CPU_ENV = f"{ROOT}/cpu-env"
 # Models we serve ourselves (serve.yaml), by a name of ours: {"h100": "http://127.0.0.1:8001/v1"}.
 # OpenCode reaches one as <name>/<model>.
@@ -129,8 +137,8 @@ def names(ep, words):
 
 
 async def burnt(p):
-    """CPU seconds used in the CAGE scope that process `p` runs in, read until it ends. What the
-    agent left running in the scope is then killed."""
+    """CPU seconds used in the scope that process `p` runs in, read until it ends. What the agent
+    left running in the scope is then killed."""
     await asyncio.sleep(1)
     try:
         scope, seconds = "/sys/fs/cgroup" + open(f"/proc/{p.pid}/cgroup").read().strip().split("::")[1], 0
@@ -168,7 +176,7 @@ async def limited(p, ep):
 async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
     """One episode. `tools` is what the agent has besides reading its files: "pool" a shell with
     styx, "cpu" a shell inside CAGE with CPU_ENV's python, "none" neither. Returns the agent's last
-    message, its seconds, the CPU seconds used inside CAGE and whether it ran out of time."""
+    message, its seconds, the CPU seconds of all it ran and whether it ran out of time."""
     for d in ("work", "spool", "bin"):
         os.makedirs(f"{ep}/{d}")
     for f in files:
@@ -200,7 +208,7 @@ async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
         with open(f"{ep}/opencode.json", "w") as f:
             json.dump(dict(autoupdate=False, share="disabled", permission=allow, provider=ours), f)
         env.update(OPENCODE_CONFIG=f"{ep}/opencode.json")
-    cmd = (CAGE if tools == "cpu" else []) + (jail(agent, ep) if agent in OPEN else []) + [exe, *globals()[agent](model, prompt, ep, tools != "none")]
+    cmd = (CAGE if tools == "cpu" else WALL) + (jail(agent, ep) if agent in OPEN else []) + [exe, *globals()[agent](model, prompt, ep, tools != "none")]
     t = time.time()
     with open(f"{ep}/stderr.txt", "w") as err:
         p = await asyncio.create_subprocess_exec(
@@ -208,7 +216,7 @@ async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=err, start_new_session=True,
         )
         events = asyncio.create_task(copy(p.stdout, ep, t))
-        meter = asyncio.create_task(burnt(p)) if tools == "cpu" else None
+        meter = asyncio.create_task(burnt(p))
         limit = asyncio.create_task(limited(p, ep)) if agent == "opencode" else None
         try:
             await asyncio.wait_for(p.wait(), minutes * 60)
@@ -228,7 +236,7 @@ async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
         raise RuntimeError(f"{agent} did not run: {open(f'{ep}/stderr.txt').read()[:300]}")
     seconds = round(time.time() - t, 1)
     text, usage = answer(agent, ep)
-    return dict(answer=text, agent_s=seconds, cpu_s=await meter if meter else None, late=late, exit=p.returncode, host=os.uname().nodename, **usage)
+    return dict(answer=text, agent_s=seconds, cpu_s=await meter, late=late, exit=p.returncode, host=os.uname().nodename, **usage)
 
 
 SELF = [f"SELF_{q}{end}" for q in ("SECONDS", "OUTPUT_TOKENS", "TOOL_CALLS") for end in ("", "_LOW", "_HIGH")]

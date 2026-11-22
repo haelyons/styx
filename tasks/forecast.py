@@ -87,7 +87,7 @@ def error():
             rmse_in=said["TEST_RMSE_LOW"] <= real["test_rmse"] <= said["TEST_RMSE_HIGH"],
             request_ok=said["REQUEST_S"] >= real["seconds"],
             request_ratio=said["REQUEST_S"] / real["seconds"],
-            agent_s=run["agent_s"], cpu_s=run["cpu_s"] or 0, late=run["late"], peeked=agents.names(ep, ANSWERS),
+            agent_s=run["agent_s"], cpu_s=run["cpu_s"], late=run["late"], peeked=agents.names(ep, ANSWERS),
             **agents.own(own, run),
         )
         row = {**run, **value, "item": state.sample_id, "epoch": state.epoch, "said": said, "own": own, "ours": real}
