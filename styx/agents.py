@@ -9,6 +9,7 @@ episode directory outside this repo.
 """
 
 import asyncio
+import glob
 import json
 import os
 import shutil
@@ -122,6 +123,16 @@ async def burnt(p):
     return round(seconds, 1)
 
 
+async def limited(p, ep):
+    """OpenCode waits out a usage limit without a word in its events; this ends it and says so."""
+    while p.returncode is None:
+        if any("usage limit reached" in open(f).read() for f in glob.glob(f"{ep}/home/log/*.log")):
+            os.killpg(p.pid, signal.SIGKILL)
+            return True
+        await asyncio.sleep(10)
+    return False
+
+
 async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
     """One episode. `tools` is what the agent has besides reading its files: "pool" a shell with
     styx, "cpu" a shell inside CAGE with CPU_ENV's python, "none" neither. Returns the agent's last
@@ -161,6 +172,7 @@ async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
             stdin=asyncio.subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True,
         )
         meter = asyncio.create_task(burnt(p)) if tools == "cpu" else None
+        limit = asyncio.create_task(limited(p, ep)) if agent == "opencode" else None
         try:
             await asyncio.wait_for(p.wait(), minutes * 60)
             late = False
@@ -172,5 +184,7 @@ async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
     if agent == "codex" and open(f"{ep}/home/.codex/auth.json").read() != open(LOGIN).read():
         shutil.copy(f"{ep}/home/.codex/auth.json", LOGIN)  # a login Codex renewed goes back
     shutil.rmtree(f"{ep}/home", ignore_errors=True)  # no login stays in the episode
+    if limit and await limit:
+        raise RuntimeError("opencode did not run: usage limit reached")
     text, usage = answer(agent, ep)
     return dict(answer=text, agent_s=round(time.time() - t, 1), cpu_s=await meter if meter else None, late=late, exit=p.returncode, **usage)
