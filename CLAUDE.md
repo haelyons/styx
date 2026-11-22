@@ -26,6 +26,7 @@ our own posting of the same workload.
 
 ## Data
 - Every run uploads its results to the HF dataset `hal2k/styx-data` as `<task>/<date>-<commit>/`. No prose.
+- Episodes go up a run at a time, at most one commit in 15 minutes from a machine; `python -m styx.data` sends what is left.
 - `styx/data.py` is the only way there. It replaces every value of `.env` with its name.
 
 ## Limits

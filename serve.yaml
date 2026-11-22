@@ -14,7 +14,8 @@ envs:
 setup: |
   curl -LsSf https://astral.sh/uv/install.sh | sh
   ~/.local/bin/uv venv ~/vllm --python 3.12
-  ~/.local/bin/uv pip install -p ~/vllm/bin/python vllm hf_transfer --torch-backend=auto
+  # Lambda's driver is 570: CUDA 12. vLLM's later releases are built for CUDA 13 only.
+  ~/.local/bin/uv pip install -p ~/vllm/bin/python vllm==0.32.0 hf_transfer --torch-backend=cu129 --extra-index-url https://wheels.vllm.ai/0.32.0/cu129 --index-strategy unsafe-best-match
   HF_HUB_ENABLE_HF_TRANSFER=1 ~/vllm/bin/hf download $MODEL --exclude "original/*" "metal/*"
 run: |
   nvidia-smi --query-gpu=name,memory.total --format=csv,noheader

@@ -37,7 +37,6 @@ TOLERANCE, MINUTES = 0.001, 90
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN = open(f"{REPO}/COMMIT").read().strip()
 ANSWERS = ("reference.jsonl", "styx-data", REPO)
-KEEP = ("ledger.jsonl", "transcript.jsonl", "clock.txt", "stderr.txt", "answer.txt", "episode.json", "before/transcript.jsonl", "before/clock.txt", "before/answer.txt", "work/*")
 
 
 def reference():
@@ -82,7 +81,7 @@ def cost():
         row = {**state.metadata["run"], **value, "cell": state.sample_id, "epoch": state.epoch, "said": said[-1] if said else None, "ours": mine, "own": state.metadata["own"], "posted": jobs}
         with open(f"{ep}/episode.json", "w") as f:
             json.dump(row, f, indent=1)
-        await asyncio.to_thread(data.upload, ep, os.path.relpath(ep, agents.ROOT), KEEP)
+        await asyncio.to_thread(data.push, os.path.dirname(os.path.dirname(ep)))
         return Score(value=value, answer=said[-1] if said else None, metadata=dict(jobs=jobs))
 
     return score

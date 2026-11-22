@@ -47,8 +47,6 @@ KEYS = ("RUNTIME_S", "RUNTIME_S_LOW", "RUNTIME_S_HIGH", "PEAK_GPU_MB", "TEST_RMS
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN = open(f"{REPO}/COMMIT").read().strip()
 ANSWERS = ("PredictBeforeExecute", "styx-data", "denoise.jsonl", REPO, *(v.split("_run_")[1][:12] for v in items.JOBS.values()))
-KEEP = ("transcript.jsonl", "clock.txt", "stderr.txt", "answer.txt", "episode.json", "before/transcript.jsonl", "before/clock.txt", "before/answer.txt",
-        "work/*.py", "work/*.sh", "work/*.txt", "work/*.json", "work/*.log")
 
 
 def measured():
@@ -95,7 +93,7 @@ def error():
         row = {**run, **value, "item": state.sample_id, "epoch": state.epoch, "said": said, "own": own, "ours": real}
         with open(f"{ep}/episode.json", "w") as f:
             json.dump(row, f, indent=1)
-        await asyncio.to_thread(data.upload, ep, os.path.relpath(ep, agents.ROOT), KEEP)
+        await asyncio.to_thread(data.push, os.path.dirname(os.path.dirname(ep)))
         return Score(value=value, answer=json.dumps(said))
 
     return score
