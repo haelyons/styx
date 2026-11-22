@@ -115,6 +115,16 @@ def answer(agent, ep):
         input_tokens=sum(u["input_tokens"] - u["cached_input_tokens"] for u in use), cost_usd=None)
 
 
+def episode(task, run, agent, model, sample, epoch):
+    return f"{ROOT}/{task}/{run}/{agent}{'-' + model.replace('/', '_') if model else ''}/{sample}-{epoch}"
+
+
+def names(ep, words):
+    """Whether the agent's transcript names any of `words`, which say where the answers are."""
+    text = open(f"{ep}/transcript.jsonl").read()
+    return any(w in text for w in words)
+
+
 async def burnt(p):
     """CPU seconds used in the CAGE scope that process `p` runs in, read until it ends. What the
     agent left running in the scope is then killed."""
