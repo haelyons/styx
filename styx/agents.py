@@ -132,9 +132,9 @@ async def burnt(p):
     """CPU seconds used in the CAGE scope that process `p` runs in, read until it ends. What the
     agent left running in the scope is then killed."""
     await asyncio.sleep(1)
-    scope, seconds = "/sys/fs/cgroup" + open(f"/proc/{p.pid}/cgroup").read().strip().split("::")[1], 0
-    assert scope.endswith(".scope"), scope
     try:
+        scope, seconds = "/sys/fs/cgroup" + open(f"/proc/{p.pid}/cgroup").read().strip().split("::")[1], 0
+        assert scope.endswith(".scope"), scope
         while p.returncode is None:
             seconds = int(open(f"{scope}/cpu.stat").read().split()[1]) / 1e6
             await asyncio.sleep(2)
@@ -222,6 +222,8 @@ async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
     if agent == "codex" and open(f"{ep}/home/.codex/auth.json").read() != open(LOGIN).read():
         shutil.copy(f"{ep}/home/.codex/auth.json", LOGIN)  # a login Codex renewed goes back
     shutil.rmtree(f"{ep}/home", ignore_errors=True)  # no login stays in the episode
+    if p.returncode and not late and not os.path.getsize(f"{ep}/transcript.jsonl"):
+        raise RuntimeError(f"{agent} did not run: {open(f'{ep}/stderr.txt').read()[:300]}")
     if limit and await limit:
         raise RuntimeError("opencode did not run: usage limit reached")
     seconds = round(time.time() - t, 1)
