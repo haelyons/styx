@@ -1,0 +1,36 @@
+# A machine whose CPUs stand in for an agent's own, for episodes of agents that need no login
+# (OpenCode's free models). It holds what tasks/forecast.py needs and nothing of the pool.
+#   sky launch -c styx-bench bench.yaml --secret HF_TOKEN -i 60 --down
+#   rsync -a out/denoise/denoise.jsonl styx-bench:sky_workdir/out/denoise/
+#   sky exec styx-bench "cd sky_workdir && STYX_CORES=0-3 ~/venv/bin/inspect eval tasks/forecast.py --model none -T agent=opencode -T model=..."
+name: styx-bench
+resources:
+  cloud: lambda
+  cpus: 16+
+workdir: .
+secrets:
+  HF_TOKEN: ""
+setup: |
+  sudo apt-get install -y -q bubblewrap > /dev/null
+  sudo loginctl enable-linger $USER
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ~/.local/bin/uv venv ~/venv --python 3.11
+  ~/.local/bin/uv pip install -p ~/venv/bin/python -e .
+  mkdir -p ~/.cache/styx out/denoise
+  ~/.local/bin/uv venv ~/.cache/styx/cpu-env --python 3.12
+  ~/.local/bin/uv pip install -p ~/.cache/styx/cpu-env/bin/python torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cpu
+  ~/.local/bin/uv pip install -p ~/.cache/styx/cpu-env/bin/python scikit-learn pandas pillow tqdm
+  curl -fsSL https://opencode.ai/install | bash
+  ~/venv/bin/python -c "
+  import zipfile, os
+  from huggingface_hub import HfFileSystem
+  with HfFileSystem(token=False).open('datasets/zjunlp/PredictBeforeExecute/tasks/data.zip', 'rb', block_size=2**22) as f:
+      z = zipfile.ZipFile(f)
+      z.extractall(os.path.expanduser('~/.cache/styx/data'), members=[n for n in z.infolist() if n.filename.startswith('data/denoising-dirty-documents/')])
+  "
+  echo "HF_W_KEY_ONE=$HF_TOKEN" > .env
+run: |
+  nproc; lscpu | grep "Model name"; free -g | sed -n 2p
+  export XDG_RUNTIME_DIR=/run/user/$(id -u)
+  systemd-run --user --scope --quiet -p MemoryMax=8G taskset -c 0-3 ~/.cache/styx/cpu-env/bin/python -c "import torch, os; print(torch.__version__, len(os.sched_getaffinity(0)))"
+  bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs $HOME --ro-bind ~/.opencode ~/.opencode ~/.opencode/bin/opencode --version

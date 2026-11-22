@@ -186,9 +186,10 @@ async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
         os.makedirs(f"{ep}/home/.codex")
         shutil.copy(LOGIN, f"{ep}/home/.codex/auth.json")
         env.update(HOME=f"{ep}/home")
-    if agent == "opencode":  # its account, and a config of ours in place of the user's
+    if agent == "opencode":  # its account where there is one, and a config of ours in place of the user's
         os.makedirs(f"{ep}/home")
-        account(f"{ep}/home/opencode.db")
+        if os.path.exists(f"{HOME}/.local/share/opencode/opencode.db"):
+            account(f"{ep}/home/opencode.db")
         allow = {"*": "allow", "webfetch": "deny", "websearch": "deny", **({} if tools != "none" else {"bash": "deny", "edit": "deny"})}
         with open(f"{ep}/opencode.json", "w") as f:
             json.dump(dict(autoupdate=False, share="disabled", permission=allow), f)
