@@ -1,7 +1,8 @@
 """Handed a workload it cannot run here and a GPU pool, does an agent get the right number, and
-what do the jobs it posts cost next to the cheapest posting we know?
+what do the jobs it posts cost next to the cheapest posting we know? And before it starts, what
+does it say its own run will take?
 
-inspect eval tasks/post.py --model none -T agent=claude [-T model=...] --log-dir ~/.cache/styx/post/$(cat COMMIT)/logs
+inspect eval tasks/post.py --model none -T agent=claude [-T model=...] --max-samples 1 --epochs 3 --log-dir ~/.cache/styx/post/$(cat COMMIT)/logs
 """
 
 import asyncio
@@ -36,7 +37,7 @@ TOLERANCE, MINUTES = 0.001, 90
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN = open(f"{REPO}/COMMIT").read().strip()
 ANSWERS = ("reference.jsonl", "styx-data", REPO)
-KEEP = ("ledger.jsonl", "transcript.jsonl", "stderr.txt", "answer.txt", "episode.json", "work/*")
+KEEP = ("ledger.jsonl", "transcript.jsonl", "clock.txt", "stderr.txt", "answer.txt", "episode.json", "before/transcript.jsonl", "before/clock.txt", "before/answer.txt", "work/*")
 
 
 def reference():
@@ -49,9 +50,10 @@ def reference():
 def posts(agent, model, minutes):
     async def solve(state, generate):
         ep = agents.episode("post", RUN, agent, model, state.sample_id, state.epoch)
+        own = await agents.before(agent, model, state.input_text, ep)
         r = await agents.run(agent, model, state.input_text, [f"{REPO}/jobs/loss.py"], ep, minutes)
         state.output = ModelOutput.from_content(model=f"{agent}/{model or 'default'}", content=r.pop("answer"))
-        state.metadata.update(episode=ep, run=r)
+        state.metadata.update(episode=ep, run=r, own=own)
         return state
 
     return solve
@@ -75,9 +77,9 @@ def cost():
             usd=sum(j.get("usd", 0) for j in jobs), usd_ours=mine["usd"],
             gpu_s=sum(j.get("seconds", 0) for j in jobs), gpu_s_ours=mine["seconds"],
             agent_s=state.metadata["run"]["agent_s"], late=state.metadata["run"]["late"], calls=len(calls),
-            peeked=agents.names(ep, ANSWERS),
+            peeked=agents.names(ep, ANSWERS), **agents.own(state.metadata["own"], state.metadata["run"]),
         )
-        row = {**state.metadata["run"], **value, "cell": state.sample_id, "epoch": state.epoch, "said": said[-1] if said else None, "ours": mine, "posted": jobs}
+        row = {**state.metadata["run"], **value, "cell": state.sample_id, "epoch": state.epoch, "said": said[-1] if said else None, "ours": mine, "own": state.metadata["own"], "posted": jobs}
         with open(f"{ep}/episode.json", "w") as f:
             json.dump(row, f, indent=1)
         await asyncio.to_thread(data.upload, ep, os.path.relpath(ep, agents.ROOT), KEEP)

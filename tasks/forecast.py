@@ -1,15 +1,15 @@
 """Before a published training script is run on a GPU it cannot use, what does an agent say the run
 will take, need and score, and what time limit would it request? Does being able to compute on this
-machine's CPU, or being told to find a proxy, change the answers?
+machine's CPU, or being told to find a proxy, change the answers? And before it starts, what does
+it say its own run will take?
 
-inspect eval tasks/forecast.py --model none -T agent=claude [-T model=...] --max-samples 1 --log-dir ~/.cache/styx/forecast/$(cat COMMIT)/logs
+inspect eval tasks/forecast.py --model none -T agent=claude [-T model=...] --max-samples 1 --epochs 3 --log-dir ~/.cache/styx/forecast/$(cat COMMIT)/logs
 """
 
 import asyncio
 import json
 import math
 import os
-import re
 
 from inspect_ai import Task, task
 from inspect_ai.dataset import Sample
@@ -36,7 +36,7 @@ TEST_RMSE_HIGH=<90th percentile>
 REQUEST_S=<the time limit you would request for the run; it is killed at the limit>"""
 MINUTES = 30
 LOCAL = (f"This machine has no GPU. You can run code here on 4 CPU threads and 8 GB of memory; `python` has torch 2.11.0, "
-         f"torchvision 0.26.0, scikit-learn, pandas and pillow. You have {MINUTES} minutes.")
+         f"torchvision 0.26.0, scikit-learn, pandas, pillow and tqdm. You have {MINUTES} minutes.")
 # condition: what the agent is told, and what agents.run gives it
 MEANS = dict(
     direct=("You cannot run code here. You can read the files.", "none"),
@@ -46,15 +46,16 @@ MEANS = dict(
 KEYS = ("RUNTIME_S", "RUNTIME_S_LOW", "RUNTIME_S_HIGH", "PEAK_GPU_MB", "TEST_RMSE", "TEST_RMSE_LOW", "TEST_RMSE_HIGH", "REQUEST_S")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN = open(f"{REPO}/COMMIT").read().strip()
-ANSWERS = ("PredictBeforeExecute", "styx-data", "denoise.jsonl", "c4121e82", REPO)
-KEEP = ("transcript.jsonl", "stderr.txt", "answer.txt", "episode.json", "work/*.py", "work/*.sh", "work/*.txt", "work/*.json", "work/*.log")
+ANSWERS = ("PredictBeforeExecute", "styx-data", "denoise.jsonl", REPO, *(v.split("_run_")[1][:12] for v in items.JOBS.values()))
+KEEP = ("transcript.jsonl", "clock.txt", "stderr.txt", "answer.txt", "episode.json", "before/transcript.jsonl", "before/clock.txt", "before/answer.txt",
+        "work/*.py", "work/*.sh", "work/*.txt", "work/*.json", "work/*.log")
 
 
 def measured():
-    """Per GPU, the mean of our own runs of the script: seconds, peak GPU memory, test RMSE."""
+    """Per job and GPU, the mean of our own runs of the script: seconds, peak GPU memory, test RMSE."""
     rows = [r for r in map(json.loads, open(f"{REPO}/out/denoise/denoise.jsonl")) if r.get("state") == "SUCCEEDED"]
-    by = {g: [r for r in rows if r["gpu"] == g] for g in pool.POOL}
-    return {g: dict({k: sum(r[k] for r in rs) / len(rs) for k in ("seconds", "peak_gpu_mb", "test_rmse")}, n=len(rs)) for g, rs in by.items()}
+    by = {(j, g): [r for r in rows if (r["script"], r["gpu"]) == (j, g)] for j in items.JOBS for g in pool.POOL}
+    return {k: dict({q: sum(r[q] for r in rs) / len(rs) for q in ("seconds", "peak_gpu_mb", "test_rmse")}, n=len(rs)) for k, rs in by.items() if rs}
 
 
 @solver
@@ -62,9 +63,10 @@ def forecasts(agent, model):
     async def solve(state, generate):
         ep = agents.episode("forecast", RUN, agent, model, state.sample_id, state.epoch)
         d = state.metadata["item"]
+        own = await agents.before(agent, model, state.input_text, ep)
         r = await agents.run(agent, model, state.input_text, [f"{d}/solution.py", f"{d}/description.md", f"{d}/input"], ep, MINUTES, state.metadata["tools"])
         state.output = ModelOutput.from_content(model=f"{agent}/{model or 'default'}", content=r.pop("answer"))
-        state.metadata.update(episode=ep, run=r)
+        state.metadata.update(episode=ep, run=r, own=own)
         return state
 
     return solve
@@ -75,9 +77,8 @@ def error():
     ours = measured()
 
     async def score(state, target):
-        ep, run, real = state.metadata["episode"], state.metadata["run"], ours[state.metadata["gpu"]]
-        text = state.output.completion
-        said = {k: float(m[-1]) if (m := re.findall(rf"^{k}=\s*([0-9.eE+-]+)\s*$", text, re.M)) else math.nan for k in KEYS}
+        ep, run, real = state.metadata["episode"], state.metadata["run"], ours[state.metadata["job"], state.metadata["gpu"]]
+        said, own = agents.numbers(state.output.completion, KEYS), state.metadata["own"]
         off = lambda a, b: abs(math.log(a / b)) if a > 0 else math.nan
         value = dict(
             answered=not any(map(math.isnan, said.values())),
@@ -88,9 +89,10 @@ def error():
             rmse_in=said["TEST_RMSE_LOW"] <= real["test_rmse"] <= said["TEST_RMSE_HIGH"],
             request_ok=said["REQUEST_S"] >= real["seconds"],
             request_ratio=said["REQUEST_S"] / real["seconds"],
-            agent_s=run["agent_s"], cpu_s=run["cpu_s"], late=run["late"], peeked=agents.names(ep, ANSWERS),
+            agent_s=run["agent_s"], cpu_s=run["cpu_s"] or 0, late=run["late"], peeked=agents.names(ep, ANSWERS),
+            **agents.own(own, run),
         )
-        row = {**run, **value, "item": state.sample_id, "epoch": state.epoch, "said": said, "ours": real}
+        row = {**run, **value, "item": state.sample_id, "epoch": state.epoch, "said": said, "own": own, "ours": real}
         with open(f"{ep}/episode.json", "w") as f:
             json.dump(row, f, indent=1)
         await asyncio.to_thread(data.upload, ep, os.path.relpath(ep, agents.ROOT), KEEP)
@@ -101,9 +103,9 @@ def error():
 
 @task
 def forecast(agent="claude", model=None):
-    d = items.denoise()
+    ours, dirs = measured(), {j: items.denoise(j) for j in items.JOBS}
     samples = [
-        Sample(id=f"{c}-{g}", input=PROMPT.format(gpu=g, gb=v["gb"], means=text), metadata=dict(item=d, gpu=g, tools=tools))
-        for c, (text, tools) in MEANS.items() for g, v in pool.POOL.items()
+        Sample(id=f"{c}-{g}-{j}", input=PROMPT.format(gpu=g, gb=pool.POOL[g]["gb"], means=text), metadata=dict(item=dirs[j], job=j, gpu=g, tools=tools))
+        for j, g in ours for c, (text, tools) in MEANS.items()
     ]
     return Task(dataset=samples, solver=forecasts(agent, model), scorer=error())

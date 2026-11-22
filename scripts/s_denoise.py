@@ -40,7 +40,7 @@ def gpu(n, jobs):
     for job in jobs:
         d = items.denoise(job)
         for r, log in pool.ours(f"{OUT}/ledger.jsonl", [(g, "python solution.py") for g in pool.POOL] * n, d):
-            r.update(where=r["gpu"], job=job, variant="full", **said("\n".join(log)))
+            r.update(where=r["gpu"], script=job, variant="full", **said("\n".join(log)))
             if r["state"] == "SUCCEEDED":
                 subprocess.run(["rsync", f"{pool.POOL[r['gpu']]['cluster']}:jobs/{r['uid']}/submission/submission.csv", f"{d}/submission.csv"], check=True)
                 r["test_rmse"] = items.rmse(f"{d}/submission.csv")
@@ -60,7 +60,7 @@ def cpu(variant, minutes):
     with open(f"{OUT}/logs/cpu-{variant}-{int(t)}.txt", "w") as f:
         f.write("\n".join(f"{s:8.1f}  {l}" for s, l in lines) + "\n")
     model = next(l.split(":")[1].strip() for l in open("/proc/cpuinfo") if l.startswith("model name"))
-    row = dict(where="cpu", job="a", variant=variant, cpu=model, threads=4, limit_s=minutes * 60, seconds=seconds, exit=code, timeout=code == -signal.SIGKILL,
+    row = dict(where="cpu", script="a", variant=variant, cpu=model, threads=4, limit_s=minutes * 60, seconds=seconds, exit=code, timeout=code == -signal.SIGKILL,
                peak_rss_mb=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss // 1024, **said(log),
                lines=[(s, l) for s, l in lines if "Epoch" in l or "resolution" in l or "complete" in l])
     if code == 0:
