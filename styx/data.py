@@ -31,12 +31,12 @@ def env():
 
 def stage(src, tmp, keep):
     """Copies the files of `src` whose relative path matches one of `keep` into `tmp`, each value of
-    .env replaced by its name. Hidden directories, __pycache__ and files over 50 MB stay behind."""
+    .env replaced by its name. Hidden directories, __pycache__, an episode's work/input/ (the task's data) and files over 50 MB stay behind."""
     names = {v.encode(): f"<{k}>".encode() for k, v in env().items()}
     for root, _, files in os.walk(src):
         for rel in (os.path.relpath(f"{root}/{f}", src) for f in files):
             hidden = "/." in f"/{os.path.dirname(rel)}" or "__pycache__" in rel
-            if hidden or os.path.getsize(f"{src}/{rel}") > MAX_BYTES or not any(fnmatch.fnmatch(rel, k) for k in keep):
+            if hidden or rel.startswith("work/input/") or os.path.getsize(f"{src}/{rel}") > MAX_BYTES or not any(fnmatch.fnmatch(rel, k) for k in keep):
                 continue
             b = open(f"{src}/{rel}", "rb").read()
             for value, name in names.items():
@@ -74,7 +74,7 @@ def push(run, every=900):
 
 def table():
     """Writes episodes.jsonl, one row per scored episode of every run: where it is, its own numbers,
-    its first job, how its seconds went, and for a forecast the signed ln(said / ours) of its runtime, memory and test RMSE."""
+    its first job, how its seconds went, and for a forecast the signed ln(said / ours) of its runtime, memory and test score."""
     from styx import agents
 
     os.makedirs(f"{ROOT}/table", exist_ok=True)
@@ -90,9 +90,10 @@ def table():
                     flat.update({f"first.{q}": v[0].get(q) for q in ("gpu", "limit_s", "state", "seconds", "cmd") if v})
                 else:
                     flat[k] = v
-            for k, a, b in (("runtime_ln", "said.RUNTIME_S", "ours.seconds"), ("memory_ln", "said.PEAK_GPU_MB", "ours.peak_gpu_mb"), ("rmse_ln", "said.TEST_RMSE", "ours.test_rmse")):
+            for k, a, b in (("runtime_ln", "said.RUNTIME_S", "ours.seconds"), ("memory_ln", "said.PEAK_GPU_MB", "ours.peak_gpu_mb"), ("score_ln", "said.TEST_SCORE", "ours.test_score")):
                 if "said" in row:
-                    flat[k] = math.log(flat[a] / flat[b]) if (flat.get(a) or 0) > 0 and (flat.get(b) or 0) > 0 else None
+                    x, y = (flat.get(n, flat.get(n.replace("TEST_SCORE", "TEST_RMSE").replace("test_score", "test_rmse"))) for n in (a, b))  # episodes from before there were many tasks have the RMSE
+                    flat[k] = math.log(x / y) if (x or 0) > 0 and (y or 0) > 0 else None
             out.write(json.dumps({**flat, **(agents.spent(ep) if os.path.exists(f"{ep}/clock.txt") else {})}) + "\n")  # the first runs kept no clock
 
 
