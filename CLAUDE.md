@@ -12,6 +12,7 @@ and score; before any episode, what its own run will take.
 
 ## Code
 - `styx/` is the core. `jobs/` holds the workloads handed to agents. `tasks/` holds Inspect tasks.
+- `scripts/` holds what we run ourselves: our postings and runs that episodes are scored against, and Inspect Scout scans of the transcripts.
 - `pool.yaml` is a GPU node of the pool, `bench.yaml` a machine whose CPUs stand in for an agent's own,
   `serve.yaml` an open-weights model behind vLLM. `styx/slow.py` gives a served model a second speed.
 - A task's docstring is its question, nothing else. Its constants stay in it.
