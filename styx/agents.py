@@ -82,14 +82,14 @@ def account(path):
 
 def claude(model, prompt, ep, shell):
     cmd = ["-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
-           "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "", "--thinking-display", "summarized",
+           "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "", "--thinking-display", "summarized", "--effort", "medium",
            "--add-dir", f"{ep}/spool", "--allowedTools", "Read", "Glob", "Grep"] + (["Write", "Edit", "Bash"] if shell else [])
     return cmd + (["--model", model] if model else [])
 
 
 def codex(model, prompt, ep, shell):
     """Without a shell Codex still runs commands, but can write nothing. Its web search is off, as the
-    web tools of the other two are."""
+    web tools of the other two are. Its reasoning effort is medium, as Claude Code's is."""
     cmd = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-c", "model_reasoning_effort=medium", "-c", 'model_reasoning_summary="detailed"', "-c", 'web_search="disabled"', "--disable", "apps", "-s", "workspace-write" if shell else "read-only",
            "--add-dir", f"{ep}/spool", "-o", f"{ep}/answer.txt"]
     return cmd + (["-m", model] if model else []) + [prompt]

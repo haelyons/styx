@@ -1,7 +1,8 @@
 """Before a published training script is run on a GPU it cannot use, what does an agent say the run
 will take, need and score, and what time limit would it request? Does being able to compute on this
-machine's CPU, or being told to find a proxy, change the answers? And before it starts, what does
-it say its own run will take?
+machine's CPU, or being told to find a proxy, change the answers? Are they nearer than a forecast
+that knows nothing of the script, the mean of our other jobs on that GPU? And before it starts,
+what does it say its own run will take?
 
 inspect eval tasks/forecast.py --model none -T agent=claude [-T model=...] --max-samples 1 --epochs 3 --log-dir ~/.cache/styx/forecast/$(cat COMMIT)/logs
 """
@@ -29,7 +30,7 @@ End your reply with these lines, each a single number:
 RUNTIME_S=<wall-clock seconds of the run, your median>
 RUNTIME_S_LOW=<10th percentile>
 RUNTIME_S_HIGH=<90th percentile>
-PEAK_GPU_MB=<peak GPU memory used, in MB>
+PEAK_GPU_MB=<peak GPU memory in use on the device, as nvidia-smi reports it, in MB>
 TEST_RMSE=<the grade, your median>
 TEST_RMSE_LOW=<10th percentile>
 TEST_RMSE_HIGH=<90th percentile>
@@ -56,6 +57,13 @@ def measured():
     return {k: dict({q: sum(r[q] for r in rs) / len(rs) for q in ("seconds", "peak_gpu_mb", "test_rmse")}, n=len(rs)) for k, rs in by.items() if rs}
 
 
+def constant(ours):
+    """Per job and GPU, the forecast that knows nothing of the script: the geometric mean of our
+    other jobs on that GPU."""
+    mean = lambda v: math.exp(sum(map(math.log, v)) / len(v))
+    return {(j, g): {q: mean([r[q] for (k, h), r in ours.items() if h == g and k != j]) for q in ("seconds", "peak_gpu_mb", "test_rmse")} for j, g in ours}
+
+
 @solver
 def forecasts(agent, model):
     async def solve(state, generate):
@@ -74,9 +82,11 @@ def forecasts(agent, model):
 @scorer(metrics={"*": [mean()]})
 def error():
     ours = measured()
+    blind = constant(ours)
 
     async def score(state, target):
         ep, run, real = state.metadata["episode"], state.metadata["run"], ours[state.metadata["job"], state.metadata["gpu"]]
+        base = blind[state.metadata["job"], state.metadata["gpu"]]
         said, own = agents.numbers(state.output.completion, KEYS), state.metadata["own"]
         off = lambda a, b: abs(math.log(a / b)) if a > 0 else math.nan
         value = dict(
@@ -86,6 +96,8 @@ def error():
             memory_err=off(said["PEAK_GPU_MB"], real["peak_gpu_mb"]),
             rmse_err=abs(said["TEST_RMSE"] - real["test_rmse"]),
             rmse_in=said["TEST_RMSE_LOW"] <= real["test_rmse"] <= said["TEST_RMSE_HIGH"],
+            runtime_base=off(base["seconds"], real["seconds"]), memory_base=off(base["peak_gpu_mb"], real["peak_gpu_mb"]),
+            rmse_base=abs(base["test_rmse"] - real["test_rmse"]),
             request_ok=said["REQUEST_S"] >= real["seconds"],
             request_ratio=said["REQUEST_S"] / real["seconds"],
             agent_s=run["agent_s"], cpu_s=run["cpu_s"], late=run["late"], peeked=agents.names(ep, ANSWERS),

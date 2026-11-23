@@ -45,11 +45,12 @@ def stage(src, tmp, keep):
                 f.write(b)
 
 
-def upload(src, dst, keep):
-    """Sends the files of directory `src` matching `keep` to <dataset>/<dst>, in one commit."""
+def upload(src, dst, keep, gone=None):
+    """Sends the files of directory `src` matching `keep` to <dataset>/<dst>, in one commit. What is
+    there under `gone` and not among them is deleted."""
     with tempfile.TemporaryDirectory(dir=os.path.dirname(os.path.abspath(src))) as tmp:  # /tmp has a quota here
         stage(src, tmp, keep)
-        HfApi(token=env()["HF_W_KEY_ONE"]).upload_folder(folder_path=tmp, path_in_repo=dst, repo_type="dataset", repo_id=DATASET)
+        HfApi(token=env()["HF_W_KEY_ONE"]).upload_folder(folder_path=tmp, path_in_repo=dst, repo_type="dataset", repo_id=DATASET, delete_patterns=gone)
 
 
 def push(run, every=900):
@@ -130,4 +131,4 @@ if __name__ == "__main__":
         push(run, 0)
     table()
     transcripts()
-    upload(f"{ROOT}/table", "", ("episodes.jsonl", "transcripts/*"))
+    upload(f"{ROOT}/table", "", ("episodes.jsonl", "transcripts/*"), "transcripts/*")  # each build of the database names its files anew
