@@ -59,8 +59,9 @@ def denoise(job="a", variant="full", seed=None, epochs=None):
         assert code.count(old) == 1, old
         code = code.replace(old, new)
     if seed is not None:
-        code, n = re.subn(r"(seed\(|random_state=)42\b", rf"\g<1>{seed}", code)
-        assert n and not re.search(r"\b42\b", code), n
+        fixed = r"(seed\(|random_state=)42\b"
+        assert re.search(fixed, code) and not re.search(r"\b42\b", re.sub(fixed, "", code))  # no 42 that is not a seed
+        code = re.sub(fixed, rf"\g<1>{seed}", code)
     for sub in ("train", "train_cleaned", "test"):
         shutil.copytree(f"{DATA}/public/{sub}", f"{d}/input/{sub}")
     shutil.copy(f"{DATA}/public/description.md", d)
