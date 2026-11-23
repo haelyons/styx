@@ -12,21 +12,11 @@ from scripts import s_items
 from styx import data, items
 
 
-def lines(path):
-    rows = []
-    for line in open(path):
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            pass
-    return rows
-
-
 def episodes():
     """A key's dots become underscores, lower case. A forecast's test score is its TEST_SCORE, or its TEST_RMSE from before there were many tasks;
     `harness` and `model` split the agent; condition, gpu and job come from the episode id (`<condition>-<gpu>[-<job>]-<epoch>`, no job being
     job a; a post episode's job is its item and it has no condition or given GPU)."""
-    df = pd.DataFrame(lines(f"{data.ROOT}/table/episodes.jsonl"))
+    df = pd.DataFrame(items.lines(f"{data.ROOT}/table/episodes.jsonl"))
     df.columns = [c.replace(".", "_").lower() for c in df.columns]
     col = lambda c: df[c] if c in df else pd.Series(math.nan, index=df.index)
     for new, old in [(f"said_test_score{q}", f"said_test_rmse{q}") for q in ("", "_low", "_high")] + [("ours_test_score", "ours_test_rmse")]:
@@ -45,8 +35,8 @@ def episodes():
 def ours():
     """`score` is items.got's; `budget` the epochs a GPU run trained: a sweep row's, the job's last budget for the script as published
     (none for a job without BUDGETS or a CPU run); `truth` marks the seeds a forecast is scored against: per job and GPU the sweep's at the
-    full budget, else the runs as published (as tasks/forecast.py measured() takes them)."""
-    rows = lines(f"{s_items.OUT}/items.jsonl")
+    full budget, else the runs as published (items.truth)."""
+    rows = items.lines(f"{s_items.OUT}/items.jsonl")
     df = pd.DataFrame(rows).rename(columns={"job": "pool_job", "script": "job"})
     df["score"] = [items.got(r) if {"test_score", "test_rmse"} & r.keys() else math.nan for r in rows]
     df["gpu"] = df["gpu"].fillna(df["where"])
@@ -56,11 +46,7 @@ def ours():
     df["budget_label"] = [str(int(b)) if b == b else v for b, v in zip(df["budget"], df["variant"])]
     df["seed_label"] = ["none" if s != s else str(int(s)) for s in df.get("seed", pd.Series(math.nan, index=df.index))]
     df["line"] = range(1, len(df) + 1)
-    ok = df["state"].eq("SUCCEEDED")
-    swept = ok & df["variant"].eq("sweep") & df["budget"].eq(df["job"].map(full))
-    has = set(zip(df.loc[swept, "job"], df.loc[swept, "gpu"]))
-    unswept = pd.Series([(j, g) not in has for j, g in zip(df["job"], df["gpu"])], index=df.index)
-    df["truth"] = swept | (ok & df["variant"].eq("full") & df["job"].isin(full) & df["where"].ne("cpu") & unswept)
+    df["truth"] = df["uid"].isin({r["uid"] for t in items.truth(rows, set(df["gpu"])).values() for r in t["truth"]})
     return df
 
 

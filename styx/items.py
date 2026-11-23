@@ -6,6 +6,7 @@ private, from the dataset's tasks/data.zip into ~/.cache/styx/data/data/<task>/p
 33 GB zip; item fetches it if it is not there.
 """
 
+import json
 import os
 import re
 import shutil
@@ -164,3 +165,28 @@ def score(job, submission):
 def got(row):
     """The test score of a row of the results file; rows from before there were many tasks hold it as test_rmse."""
     return row["test_score"] if "test_score" in row else row["test_rmse"]
+
+
+def lines(path):
+    """The rows of a JSON-lines file; a line that is not JSON, as the last of out/items/items.jsonl may be while it is appended to, is skipped."""
+    rows = []
+    for line in open(path):
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+    return rows
+
+
+def truth(rows, gpus):
+    """Per job of BUDGETS and GPU of `gpus` with a run of the script as published that succeeded, its rows of the results file that succeeded:
+    `runs` those runs, `seeds` the sweep's at each of the job's budgets it has, and `truth` the seeds a forecast's test score is scored
+    against, the sweep's at the job's full budget if it has any, else the runs as published."""
+    ok, ours = [r for r in rows if r.get("state") == "SUCCEEDED"], {}
+    for j in BUDGETS:
+        for g in gpus:
+            runs = [r for r in ok if (r["script"], r["gpu"], r.get("variant")) == (j, g, "full")]
+            sweep = {e: [r for r in ok if (r["script"], r["gpu"], r.get("variant"), r.get("epochs")) == (j, g, "sweep", e)] for e, _, _ in BUDGETS[j]}
+            if runs:
+                ours[j, g] = dict(runs=runs, seeds={e: s for e, s in sweep.items() if s}, truth=sweep[BUDGETS[j][-1][0]] or runs)
+    return ours

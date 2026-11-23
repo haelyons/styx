@@ -61,17 +61,11 @@ def measured():
     """Per job and GPU, the mean seconds and peak GPU memory of our own full runs of the script and the
     seconds of each, the test score of every seed at the full budget and at each smaller budget of
     items.BUDGETS that was swept, and the median of the full budget's."""
-    rows = [r for r in map(json.loads, open(f"{REPO}/out/items/items.jsonl")) if r.get("state") == "SUCCEEDED"]
     ours = {}
-    for j in items.BUDGETS:
-        full = items.BUDGETS[j][-1][0]
-        for g in pool.POOL:
-            runs = [r for r in rows if (r["script"], r["gpu"], r.get("variant")) == (j, g, "full")]
-            sweep = {e: [items.got(r) for r in rows if (r["script"], r["gpu"], r.get("variant"), r.get("epochs")) == (j, g, "sweep", e)] for e, _, _ in items.BUDGETS[j]}
-            if runs:
-                score = sweep[full] or [items.got(r) for r in runs]
-                ours[j, g] = dict({q: sum(r[q] for r in runs) / len(runs) for q in ("seconds", "peak_gpu_mb")}, test_score=statistics.median(score), n=len(runs),
-                                  runs=[r["seconds"] for r in runs], score=score, budgets={e: v for e, v in sweep.items() if v and e != full})
+    for (j, g), t in items.truth(items.lines(f"{REPO}/out/items/items.jsonl"), pool.POOL).items():
+        runs, score = t["runs"], [items.got(r) for r in t["truth"]]
+        ours[j, g] = dict({q: sum(r[q] for r in runs) / len(runs) for q in ("seconds", "peak_gpu_mb")}, test_score=statistics.median(score), n=len(runs),
+                          runs=[r["seconds"] for r in runs], score=score, budgets={e: [items.got(r) for r in s] for e, s in t["seeds"].items() if e != items.BUDGETS[j][-1][0]})
     return ours
 
 
