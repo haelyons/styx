@@ -6,6 +6,7 @@ import asyncio
 import fnmatch
 import glob
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -73,7 +74,7 @@ def push(run, every=900):
 
 def table():
     """Writes episodes.jsonl, one row per scored episode of every run: where it is, its own numbers,
-    its first job, and how its seconds went."""
+    its first job, how its seconds went, and for a forecast the signed ln(said / ours) of its runtime, memory and test RMSE."""
     from styx import agents
 
     os.makedirs(f"{ROOT}/table", exist_ok=True)
@@ -89,6 +90,9 @@ def table():
                     flat.update({f"first.{q}": v[0].get(q) for q in ("gpu", "limit_s", "state", "seconds", "cmd") if v})
                 else:
                     flat[k] = v
+            for k, a, b in (("runtime_ln", "said.RUNTIME_S", "ours.seconds"), ("memory_ln", "said.PEAK_GPU_MB", "ours.peak_gpu_mb"), ("rmse_ln", "said.TEST_RMSE", "ours.test_rmse")):
+                if "said" in row:
+                    flat[k] = math.log(flat[a] / flat[b]) if (flat.get(a) or 0) > 0 and (flat.get(b) or 0) > 0 else None
             out.write(json.dumps({**flat, **(agents.spent(ep) if os.path.exists(f"{ep}/clock.txt") else {})}) + "\n")  # the first runs kept no clock
 
 

@@ -13,6 +13,7 @@ episode directory outside this repo.
 """
 
 import asyncio
+import functools
 import glob
 import json
 import math
@@ -21,6 +22,7 @@ import re
 import shutil
 import signal
 import sqlite3
+import subprocess
 import sys
 import time
 
@@ -32,6 +34,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
 ACCOUNT = os.environ.get("CLAUDE_CONFIG_DIR", f"{HOME}/.claude")
 LOGIN = f"{HOME}/.codex/auth.json"
+EFFORT = "medium"
 # What an agent allowed to compute here gets: 4 threads, 8 GB, and a Python 3.12 with the CPU wheels
 # of torch 2.11.0 and torchvision 0.26.0, scikit-learn, pandas and pillow.
 # Every agent runs under a memory limit of its own, whatever it may use: the jail's home and /tmp
@@ -82,7 +85,7 @@ def account(path):
 
 def claude(model, prompt, ep, shell):
     cmd = ["-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
-           "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "", "--thinking-display", "summarized", "--effort", "medium",
+           "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "", "--thinking-display", "summarized", "--effort", EFFORT,
            "--add-dir", f"{ep}/spool", "--allowedTools", "Read", "Glob", "Grep"] + (["Write", "Edit", "Bash"] if shell else [])
     return cmd + (["--model", model] if model else [])
 
@@ -90,7 +93,7 @@ def claude(model, prompt, ep, shell):
 def codex(model, prompt, ep, shell):
     """Without a shell Codex still runs commands, but can write nothing. Its web search is off, as the
     web tools of the other two are. Its reasoning effort is medium, as Claude Code's is."""
-    cmd = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-c", "model_reasoning_effort=medium", "-c", 'model_reasoning_summary="detailed"', "-c", 'web_search="disabled"', "--disable", "apps", "-s", "workspace-write" if shell else "read-only",
+    cmd = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-c", f"model_reasoning_effort={EFFORT}", "-c", 'model_reasoning_summary="detailed"', "-c", 'web_search="disabled"', "--disable", "apps", "-s", "workspace-write" if shell else "read-only",
            "--add-dir", f"{ep}/spool", "-o", f"{ep}/answer.txt"]
     return cmd + (["-m", model] if model else []) + [prompt]
 
@@ -286,6 +289,12 @@ async def limited(p, ep):
     return False
 
 
+@functools.cache
+def version(exe):
+    """The first line of what the CLI `exe` prints for --version."""
+    return (subprocess.run([exe, "--version"], capture_output=True, text=True).stdout.splitlines() or [None])[0]
+
+
 async def run(agent, model, prompt, files, ep, minutes, tools="pool", hold=0):
     """One episode. `tools` is what the agent has besides reading its files: "pool" a shell with
     styx, "cpu" a shell inside CAGE with CPU_ENV's python, "none" neither. `hold` is the pool's
@@ -352,7 +361,7 @@ async def run(agent, model, prompt, files, ep, minutes, tools="pool", hold=0):
         raise RuntimeError(f"{agent} did not run: {open(f'{ep}/stderr.txt').read()[:300]}")
     seconds = round(time.time() - t, 1)
     text, usage = answer(agent, ep)
-    return dict(answer=text, agent_s=seconds, cpu_s=await meter, late=late, exit=p.returncode, host=os.uname().nodename, **usage)
+    return dict(answer=text, agent_s=seconds, cpu_s=await meter, late=late, exit=p.returncode, host=os.uname().nodename, effort=EFFORT if agent in ("claude", "codex") else None, cli=version(exe), **usage)
 
 
 SELF = [f"SELF_{q}{end}" for q in ("SECONDS", "OUTPUT_TOKENS", "TOOL_CALLS") for end in ("", "_LOW", "_HIGH")]
