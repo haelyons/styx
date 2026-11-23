@@ -218,7 +218,7 @@ def prebuilt():
 
 
 def render(page, bar, sections, eps, own):
-    inputs = lambda comps, cls: f'<div class="{cls}">' + "".join(f"<div>{page.fragment(c)}</div>" for c in comps) + "</div>"
+    inputs = lambda comps, cls: f'<details class="{cls}" open><summary>Filters</summary><div>' + "".join(f"<div>{page.fragment(c)}</div>" for c in comps) + "</div></details>"
     parts = [inputs(bar, "bar"), f'<p class="nav">{" · ".join(f"<a href=#{k}>{k}</a>" for k, *_ in sections)} — the filters above act on A, B, D, E and F; C has its own. '
              f'{len(eps)} episodes in {eps["run"].nunique()} runs; {len(own)} runs of ours. Hover a point for its episode; tables sort and filter by column.</p>']
     for key, title, note, ins, comps in sections:
@@ -231,18 +231,22 @@ PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>styx episodes</title>
 <style>
 body {{ margin: 0; padding: 0 16px 40px; background: #fcfcfb; color: #0b0b0b; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", Arial, sans-serif; }}
-.bar, .filters {{ display: flex; flex-wrap: wrap; gap: 4px 28px; align-items: flex-end; padding: 2px 0 8px; }}
-.bar {{ position: sticky; top: 0; z-index: 10; background: #fcfcfb; border-bottom: 1px solid #ccc; }}
+.bar > div, .filters > div {{ display: flex; flex-wrap: wrap; gap: 4px 28px; align-items: flex-end; padding: 2px 0 8px; }}
+.bar {{ position: sticky; top: 0; z-index: 10; background: #fcfcfb; border-bottom: 1px solid #ccc; max-height: 70vh; overflow-y: auto; }}
+summary {{ cursor: pointer; font-size: 13px; font-weight: 600; padding: 8px 0; }}
 .bar .mosaic-widget, .filters .mosaic-widget {{ margin: 0 !important; }}
 .nav {{ font-size: 13px; color: #52514e; }}
 section {{ margin-top: 28px; scroll-margin-top: 110px; }}
 h2 {{ font-size: 17px; margin: 0 0 4px; }}
 .note {{ color: #52514e; font-size: 13px; margin: 0 0 8px; max-width: 1100px; }}
 .row {{ display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }}
+.row > div {{ max-width: 100%; overflow-x: auto; }}
+@media (max-width: 800px) {{ body {{ padding: 0 10px 40px; }} section {{ scroll-margin-top: 50px; }} }}
 </style>
 {head}
 </head><body>
 {body}
+<script>if (matchMedia("(max-width: 800px)").matches) document.querySelectorAll("details").forEach(d => d.open = false);</script>
 </body></html>
 """
 
