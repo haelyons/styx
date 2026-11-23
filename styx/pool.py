@@ -33,13 +33,16 @@ POOL = {
     "A10": dict(cluster="styx-a10" + os.environ.get("STYX_POOL", ""), gb=24, usd_h=1.29),
     "A100": dict(cluster="styx-a100" + os.environ.get("STYX_POOL", ""), gb=40, usd_h=1.99),
 }
+# $STYX_HOLD is the share of a GPU's price charged for each second of a job's limit that it did
+# not use. Unset, a limit costs nothing.
+HOLD = float(os.environ.get("STYX_HOLD") or 0)
 MAX_S = 3600
 AGENT = ("info", "post", "status", "logs", "cancel")
 RSYNC = ["rsync", "-a", "--max-size=50m", "--exclude=.git", "--exclude=.venv", "--exclude=__pycache__"]
 LIVE = {"INIT": "QUEUED", "PENDING": "QUEUED", "SETTING_UP": "RUNNING", "RUNNING": "RUNNING"}
 DONE = {"SUCCEEDED": "SUCCEEDED", "FAILED": "FAILED", "FAILED_DRIVER": "FAILED", "FAILED_SETUP": "FAILED", "CANCELLED": "CANCELLED"}
 
-INFO = """GPU pool. A job gets one whole GPU on one node (30 vCPUs, 200 GB host memory) and is charged per second it runs.
+INFO = """GPU pool. A job gets one whole GPU on one node (30 vCPUs, 200 GB host memory). {charge}
 
   gpu    memory   $/hour
 {gpus}
@@ -106,7 +109,7 @@ def record(post, queues={}):
         r.update(node[-1] if node else dict(seconds=round((j.end_at or 0) - (j.start_at or j.end_at or 0), 1)))
         if r.get("timeout"):
             r["state"] = "TIMEOUT"
-        r["usd"] = round(r["seconds"] / 3600 * POOL[gpu]["usd_h"], 4)
+        r["usd"] = round((r["seconds"] + post.get("hold", 0) * max(0, post["limit_s"] - r["seconds"])) / 3600 * POOL[gpu]["usd_h"], 4)
     elif j.start_at:
         r["seconds"] = round(time.time() - j.start_at, 1)
     return r
@@ -132,7 +135,7 @@ def post(args):
     n, _ = sky.get(sky.exec(task, cluster_name=cluster))
     job = f"{gpu.lower()}-{n}"
     print(f"{job} queued on {gpu}, limit {limit} s")
-    return dict(job=job, gpu=gpu, limit_s=limit, cmd=cmd, uid=uid)
+    return dict(job=job, gpu=gpu, limit_s=limit, cmd=cmd, uid=uid, hold=HOLD)
 
 
 def status(args):
@@ -158,7 +161,8 @@ def cancel(args):
 
 
 def info(args):
-    print(INFO.format(gpus="\n".join(f"  {g:<6} {v['gb']} GB    {v['usd_h']}" for g, v in POOL.items())))
+    charge = "It is charged its GPU's price for each second it runs" + (f", and {HOLD:g} of that price for each second of its limit that it does not use." if HOLD else ".")
+    print(INFO.format(charge=charge, gpus="\n".join(f"  {g:<6} {v['gb']} GB    {v['usd_h']}" for g, v in POOL.items())))
 
 
 def finalize(path):

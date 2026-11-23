@@ -286,10 +286,11 @@ async def limited(p, ep):
     return False
 
 
-async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
+async def run(agent, model, prompt, files, ep, minutes, tools="pool", hold=0):
     """One episode. `tools` is what the agent has besides reading its files: "pool" a shell with
-    styx, "cpu" a shell inside CAGE with CPU_ENV's python, "none" neither. Returns the agent's last
-    message, its seconds, the CPU seconds of all it ran and whether it ran out of time."""
+    styx, "cpu" a shell inside CAGE with CPU_ENV's python, "none" neither. `hold` is the pool's
+    $STYX_HOLD for this episode. Returns the agent's last message, its seconds, the CPU seconds of
+    all it ran and whether it ran out of time."""
     for d in ("work", "spool", "bin"):
         os.makedirs(f"{ep}/{d}")
     with open(f"{ep}/prompt.txt", "w") as f:
@@ -299,7 +300,7 @@ async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
     if tools == "pool":
         shutil.copy(f"{HERE}/client.py", f"{ep}/bin/styx")
         os.chmod(f"{ep}/bin/styx", 0o755)
-        broker = await asyncio.create_subprocess_exec(sys.executable, "-m", "styx.pool", "serve", f"{ep}/spool", f"{ep}/ledger.jsonl")
+        broker = await asyncio.create_subprocess_exec(sys.executable, "-m", "styx.pool", "serve", f"{ep}/spool", f"{ep}/ledger.jsonl", env=dict(os.environ, STYX_HOLD=str(hold)))
     if tools == "cpu":
         for name in ("python", "python3"):  # a link would lose the environment's packages
             with open(f"{ep}/bin/{name}", "w") as f:

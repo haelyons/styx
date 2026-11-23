@@ -31,6 +31,7 @@ and score; before any episode, what its own run will take.
 - Every agent runs under a memory limit of its own: 8 GB where it may compute, 2 GB elsewhere. Run no more episodes at once than the machine has memory for at those limits.
 - Evals side by side take separate CPU threads (`STYX_CORES`) and, on the post task, separate pools (`STYX_POOL`).
 - Every job records seconds, exit code, peak GPU memory and GPU busy share on the node.
+- A job is charged per second it runs. Where `$STYX_HOLD` is set, the part of its limit it did not use is charged at that share of the price, and `styx info` says so. The post task runs each cell at four shares.
 - Every CLI is asked for the agent's reasoning: Claude Code and Codex give a summary of it, OpenCode the text. A run's Inspect log holds each episode as messages.
 - The next commit message carries the run's evidence and names the commit that ran.
 
