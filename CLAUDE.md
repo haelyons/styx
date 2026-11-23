@@ -30,11 +30,12 @@ and score; before any episode, what its own run will take.
 - Every agent runs under a memory limit of its own: 8 GB where it may compute, 2 GB elsewhere. Run no more episodes at once than the machine has memory for at those limits.
 - Evals side by side take separate CPU threads (`STYX_CORES`) and, on the post task, separate pools (`STYX_POOL`).
 - Every job records seconds, exit code, peak GPU memory and GPU busy share on the node.
+- Every CLI is asked for the agent's reasoning: Claude Code and Codex give a summary of it, OpenCode the text. A run's Inspect log holds each episode as messages.
 - The next commit message carries the run's evidence and names the commit that ran.
 
 ## Data
 - Every run uploads its results to the HF dataset `hal2k/styx-data` as `<task>/<date>-<commit>/`. No prose.
-- Episodes go up a run at a time, at most one commit in 15 minutes from a machine; `python -m styx.data` sends what is left. It also sends `episodes.jsonl`, one row per episode of every run.
+- Episodes go up a run at a time, at most one commit in 15 minutes from a machine; `python -m styx.data` sends what is left. It also sends `episodes.jsonl`, one row per episode of every run, and `transcripts/`, an Inspect Scout database of what every agent wrote, reasoned and ran.
 - `styx/data.py` is the only way there. It replaces every value of `.env` with its name.
 
 ## Limits

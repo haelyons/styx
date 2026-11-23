@@ -5,7 +5,9 @@ episode directory outside this repo.
 <episode>/spool            where its styx calls and the directories it posts are left
 <episode>/bin/styx         styx/client.py; PATH is this and the system's
 <episode>/ledger.jsonl     every styx call, written by the broker
-<episode>/transcript.jsonl the agent's own event stream
+<episode>/prompt.txt       what the agent was asked
+<episode>/transcript.jsonl the agent's own event stream, with its reasoning as its CLI gives it: a
+                           summary from Claude Code and Codex, the text from OpenCode
 <episode>/clock.txt        the second each of its lines arrived
 <episode>/before/          the same again for the session that forecast this one
 """
@@ -21,6 +23,9 @@ import signal
 import sqlite3
 import sys
 import time
+
+from inspect_ai.model import ChatMessageAssistant, ChatMessageTool, ChatMessageUser, ContentReasoning, ContentText
+from inspect_ai.tool import ToolCall
 
 ROOT = os.path.expanduser("~/.cache/styx")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -77,7 +82,7 @@ def account(path):
 
 def claude(model, prompt, ep, shell):
     cmd = ["-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
-           "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "",
+           "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "", "--thinking-display", "summarized",
            "--add-dir", f"{ep}/spool", "--allowedTools", "Read", "Glob", "Grep"] + (["Write", "Edit", "Bash"] if shell else [])
     return cmd + (["--model", model] if model else [])
 
@@ -85,14 +90,14 @@ def claude(model, prompt, ep, shell):
 def codex(model, prompt, ep, shell):
     """Without a shell Codex still runs commands, but can write nothing. Its web search is off, as the
     web tools of the other two are."""
-    cmd = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-c", "model_reasoning_effort=medium", "-c", 'web_search="disabled"', "--disable", "apps", "-s", "workspace-write" if shell else "read-only",
+    cmd = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-c", "model_reasoning_effort=medium", "-c", 'model_reasoning_summary="detailed"', "-c", 'web_search="disabled"', "--disable", "apps", "-s", "workspace-write" if shell else "read-only",
            "--add-dir", f"{ep}/spool", "-o", f"{ep}/answer.txt"]
     return cmd + (["-m", model] if model else []) + [prompt]
 
 
 def opencode(model, prompt, ep, shell):
     """Permissions come from $OPENCODE_CONFIG, which run() writes: everything, or no shell and no edits."""
-    return ["run", "--format", "json", "--auto", "-m", model, prompt]
+    return ["run", "--format", "json", "--thinking", "--auto", "-m", model, prompt]
 
 
 def answer(agent, ep):
@@ -182,6 +187,68 @@ def spent(ep):
     return dict(tool_s=covered((a, b) for a, _, b in calls), wait_s=covered((a, b) for a, cmd, b in calls if WAITS.search(cmd)), model_s=api, turns=len(turns))
 
 
+def messages(ep):
+    """An episode as chat messages: its prompt, what the agent wrote, its reasoning where the CLI
+    gave any (a Claude Code block without text is marked redacted), the tools it called and what
+    came back. Each carries `t`, its second of the run, where the episode kept a clock."""
+    lines = open(f"{ep}/transcript.jsonl").read().splitlines()
+    clock = [float(x) for x in open(f"{ep}/clock.txt").read().split()] if os.path.exists(f"{ep}/clock.txt") else []
+    chat, turns, called = [], {}, {}
+    if os.path.exists(f"{ep}/prompt.txt"):
+        chat.append(ChatMessageUser(content=open(f"{ep}/prompt.txt").read()))
+
+    def turn(key, at):
+        if key not in turns:
+            turns[key] = ChatMessageAssistant(content=[], tool_calls=[], metadata=at)
+            chat.append(turns[key])
+        return turns[key]
+
+    def call(key, at, uid, function, arguments):
+        called[uid] = function
+        turn(key, at).tool_calls.append(ToolCall(id=uid, function=function, arguments=arguments if isinstance(arguments, dict) else {"input": arguments}))
+
+    def result(uid, at, content, **more):
+        text = content if isinstance(content, str) else "\n".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content or [])
+        chat.append(ChatMessageTool(content=text, tool_call_id=uid, function=called.get(uid), metadata={**at, **{k: v for k, v in more.items() if v not in (None, False)}}))
+
+    for i, line in enumerate(lines):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        at = {"t": clock[i]} if i < len(clock) else {}
+        kind, item, part = e.get("type"), e.get("item") or {}, e.get("part") or {}
+        if kind == "assistant":  # Claude Code: one event for each block of a message
+            for b in e["message"].get("content") or []:
+                if b.get("type") == "text":
+                    turn(e["message"].get("id"), at).content.append(ContentText(text=b["text"]))
+                elif b.get("type") == "thinking":
+                    turn(e["message"].get("id"), at).content.append(ContentReasoning(reasoning=b.get("thinking") or "", redacted=not b.get("thinking")))
+                elif b.get("type") == "tool_use":
+                    call(e["message"].get("id"), at, b["id"], b["name"], b.get("input"))
+        elif kind == "user":
+            content = e.get("message", {}).get("content")
+            if isinstance(content, str):
+                chat.append(ChatMessageUser(content=content, metadata=at))
+            for b in content if isinstance(content, list) else []:
+                if isinstance(b, dict) and b.get("type") == "tool_result":
+                    result(b["tool_use_id"], at, b.get("content"), is_error=b.get("is_error"))
+        elif kind == "item.completed" and item.get("type") in ("agent_message", "reasoning"):  # Codex
+            turn(item["id"], at).content.append(ContentText(text=item.get("text") or "") if item["type"] == "agent_message" else ContentReasoning(reasoning=item.get("text") or ""))
+        elif kind in ("item.started", "item.completed") and item.get("id") and item.get("type") not in ("agent_message", "reasoning"):
+            if item["id"] not in called:
+                call(item["id"], at, item["id"], item["type"], {k: v for k, v in item.items() if k not in ("id", "type", "status", "aggregated_output", "exit_code")})
+            if kind == "item.completed":
+                result(item["id"], at, item.get("aggregated_output") or "", exit_code=item.get("exit_code"), status=item.get("status"))
+        elif kind in ("text", "reasoning"):  # OpenCode
+            turn(part.get("messageID"), at).content.append((ContentText if kind == "text" else ContentReasoning)(**{kind: part.get("text") or ""}))
+        elif kind == "tool_use":  # one event when the call ends
+            state = part.get("state") or {}
+            call(part.get("messageID"), at, part["callID"], part.get("tool"), state.get("input"))
+            result(part["callID"], at, state.get("output") or state.get("error") or "", status=state.get("status"))
+    return chat
+
+
 async def burnt(p):
     """CPU seconds used in the scope that process `p` runs in, read until it ends. What the agent
     left running in the scope is then killed."""
@@ -225,6 +292,8 @@ async def run(agent, model, prompt, files, ep, minutes, tools="pool"):
     message, its seconds, the CPU seconds of all it ran and whether it ran out of time."""
     for d in ("work", "spool", "bin"):
         os.makedirs(f"{ep}/{d}")
+    with open(f"{ep}/prompt.txt", "w") as f:
+        f.write(prompt)
     for f in files:
         shutil.copytree(f, f"{ep}/work/{os.path.basename(f)}") if os.path.isdir(f) else shutil.copy(f, f"{ep}/work/")
     if tools == "pool":

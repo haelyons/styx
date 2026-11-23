@@ -53,6 +53,7 @@ def posts(agent, model, minutes):
         r = await agents.run(agent, model, state.input_text, [f"{REPO}/jobs/loss.py"], ep, minutes)
         state.output = ModelOutput.from_content(model=f"{agent}/{model or 'default'}", content=r.pop("answer"))
         state.metadata.update(episode=ep, run=r, own=own)
+        state.messages = agents.messages(ep)
         return state
 
     return solve

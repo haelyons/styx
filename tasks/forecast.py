@@ -65,6 +65,7 @@ def forecasts(agent, model):
         r = await agents.run(agent, model, state.input_text, [f"{d}/solution.py", f"{d}/description.md", f"{d}/input"], ep, MINUTES, state.metadata["tools"])
         state.output = ModelOutput.from_content(model=f"{agent}/{model or 'default'}", content=r.pop("answer"))
         state.metadata.update(episode=ep, run=r, own=own)
+        state.messages = agents.messages(ep)
         return state
 
     return solve

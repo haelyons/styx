@@ -2,10 +2,12 @@
 one occurs in a file, the copy that is uploaded has its name instead.
 """
 
+import asyncio
 import fnmatch
 import glob
 import json
 import os
+import shutil
 import tempfile
 import time
 
@@ -17,8 +19,8 @@ ENV = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 MAX_BYTES = 50e6
 ROOT = os.path.expanduser("~/.cache/styx")
 # What of an episode is published: what it said and did, and the text files it wrote.
-KEEP = ("episode.json", "ledger.jsonl", "transcript.jsonl", "clock.txt", "stderr.txt", "answer.txt", "before/transcript.jsonl", "before/clock.txt",
-        "before/answer.txt", "work/*.py", "work/*.sh", "work/*.txt", "work/*.json", "work/*.log", "work/*.md")
+KEEP = ("episode.json", "ledger.jsonl", "prompt.txt", "transcript.jsonl", "clock.txt", "stderr.txt", "answer.txt", "before/prompt.txt", "before/transcript.jsonl",
+        "before/clock.txt", "before/answer.txt", "work/*.py", "work/*.sh", "work/*.txt", "work/*.json", "work/*.log", "work/*.md")
 
 
 def env():
@@ -69,7 +71,7 @@ def push(run, every=900):
 
 
 def table():
-    """Sends episodes.jsonl, one row per scored episode of every run: where it is, its own numbers,
+    """Writes episodes.jsonl, one row per scored episode of every run: where it is, its own numbers,
     its first job, and how its seconds went."""
     from styx import agents
 
@@ -87,7 +89,39 @@ def table():
                 else:
                     flat[k] = v
             out.write(json.dumps({**flat, **(agents.spent(ep) if os.path.exists(f"{ep}/clock.txt") else {})}) + "\n")  # the first runs kept no clock
-    upload(f"{ROOT}/table", "", ("episodes.jsonl",))
+
+
+def transcripts():
+    """Writes transcripts/, an Inspect Scout database: every episode of episodes.jsonl that left a
+    transcript, and the session that forecast it, as agents.messages gives them, with the episode's
+    row as columns (numbers as floats, a dot in a name as an underscore, anything nested as JSON)."""
+    from inspect_scout import Transcript, transcripts_db
+
+    from styx import agents
+
+    async def every(tmp):
+        for row in map(json.loads, open(f"{ROOT}/table/episodes.jsonl")):
+            task, run, agent, sample = (row.pop(k) for k in ("task", "run", "agent", "episode"))
+            cli, _, model = agent.partition("-")
+            cell, _, epoch = sample.rpartition("-")
+            columns = {k.replace(".", "_"): v if isinstance(v, (str, bool, type(None))) else float(v) if isinstance(v, (int, float)) else json.dumps(v) for k, v in row.items()}
+            stage(f"{ROOT}/{task}/{run}/{agent}/{sample}", f"{tmp}/ep", ("prompt.txt", "transcript.jsonl", "clock.txt", "before/prompt.txt", "before/transcript.jsonl", "before/clock.txt"))
+            for part, name in ((f"{tmp}/ep", task), (f"{tmp}/ep/before", f"{task}-before")):
+                if os.path.exists(f"{part}/transcript.jsonl") and os.path.getsize(f"{part}/transcript.jsonl"):
+                    whole = name == task
+                    yield Transcript(
+                        transcript_id=f"{name}__{run}__{agent}__{sample}", source_type="styx", source_id=run, task_set=name, task_id=cell, task_repeat=int(epoch),
+                        agent=cli, model=model or None, score=row.get("correct") if whole else None, success=row.get("correct") if whole else None,
+                        total_time=row.get("agent_s") if whole else None, metadata=columns, messages=agents.messages(part))
+            shutil.rmtree(f"{tmp}/ep", ignore_errors=True)
+
+    async def write():
+        with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
+            async with transcripts_db(f"{ROOT}/table/transcripts") as db:
+                await db.insert(every(tmp))
+
+    shutil.rmtree(f"{ROOT}/table/transcripts", ignore_errors=True)
+    asyncio.run(write())
 
 
 if __name__ == "__main__":
@@ -95,3 +129,5 @@ if __name__ == "__main__":
         print(run, flush=True)
         push(run, 0)
     table()
+    transcripts()
+    upload(f"{ROOT}/table", "", ("episodes.jsonl", "transcripts/*"))
