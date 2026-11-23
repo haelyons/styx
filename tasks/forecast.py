@@ -137,6 +137,7 @@ def forecasts(agent, model):
 def error():
     ours = measured()
     blind = constant(ours)
+    budgets = sorted({e for v in ours.values() for e in v["budgets"]})
 
     async def score(state, target):
         ep, run, real = state.metadata["episode"], state.metadata["run"], ours[state.metadata["job"], state.metadata["gpu"]]
@@ -149,7 +150,7 @@ def error():
             runtime_pin=pinball(real["runs"], said["RUNTIME_S_LOW"], said["RUNTIME_S"], said["RUNTIME_S_HIGH"]),
             runtime_pin_base=pinball(real["runs"], base["seconds"], base["seconds"], base["seconds"]),
             memory_err=off(said["PEAK_GPU_MB"], real["peak_gpu_mb"]),
-            **grade(said, real["score"], base),
+            **(full := grade(said, real["score"], base)),
             **{k: v for e, seeds in real["budgets"].items() for k, v in grade(said, seeds, base, e).items()},
             score_recalled=off(said["TEST_SCORE"], base["published"]),
             runtime_base=off(base["seconds"], real["seconds"]), memory_base=off(base["peak_gpu_mb"], real["peak_gpu_mb"]),
@@ -163,7 +164,8 @@ def error():
         with open(f"{ep}/episode.json", "w") as f:
             json.dump(row, f, indent=1)
         await asyncio.to_thread(data.push, os.path.dirname(os.path.dirname(ep)))
-        return Score(value=value, answer=json.dumps(said))
+        # Inspect takes each key's mean over the samples and wants every sample to have it: a budget of another job's is nan here
+        return Score(value={**{f"{k}_e{e}": math.nan for e in budgets for k in full}, **value}, answer=json.dumps(said))
 
     return score
 
