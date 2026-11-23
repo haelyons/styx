@@ -1,9 +1,11 @@
 """Before an agent's first job, what limit did it ask for, and what had it written and reasoned
-until then: that the limit costs nothing, a margin, a runtime? Given a CPU to forecast with, how
-often did it run python, and what had it written and reasoned before the first time?
+until then: that the limit costs nothing, a margin, a runtime? What does a model reading the
+episode say its reason for the limit was? Given a CPU to forecast with, how often did it run
+python, and what had it written and reasoned before the first time?
 
-scout scan scripts/s_decide.py -T ~/.cache/styx/table/transcripts --scans ~/.cache/styx/scans
+scout scan scripts/s_decide.py -T ~/.cache/styx/table/transcripts --scans ~/.cache/styx/scans --model anthropic/claude-haiku-5-5
 scout view --scans ~/.cache/styx/scans
+why_limit asks the model, and only of post episodes; it needs $ANTHROPIC_API_KEY.
 
 The transcripts are styx.data.transcripts; a transcript of an earlier run holds its agent's
 reasoning only where the CLI gave it unasked.
@@ -12,9 +14,16 @@ reasoning only where the CLI gave it unasked.
 import json
 import re
 
-from inspect_scout import Result, Scanner, Transcript, scanner
+from inspect_scout import Result, Scanner, Transcript, llm_scanner, scanner
 
 UNIT = dict(s=1, m=60, h=3600)
+WHY = [
+    "The limit costs nothing: only the seconds a job runs are charged, so a long limit is free",
+    "A margin over a runtime it estimated, with no mention of what a limit costs",
+    "A limit named without an estimate of the runtime",
+    "Nothing about the limit before the job is posted",
+    "No job is posted",
+]
 SAID = dict(
     free=r"(limit|time)[^.]{0,80}(doesn'?t|does not|won'?t|no|isn'?t|not)[^.]{0,30}(cost|charg|bill|add)|(charged|billed|billing)[^.]{0,40}(per second|only for|actual|runtime|it runs)|only pay",
     margin=r"headroom|buffer|margin|to be safe|generous|plenty|cushion|comfortabl",
@@ -71,3 +80,18 @@ def ran_python() -> Scanner[Transcript]:
         return Result(value=runs, explanation=said[-3000:], metadata=dict(chars=len(said), withheld=withheld))
 
     return scan
+
+
+@scanner(messages="all")
+def why_limit() -> Scanner[Transcript]:
+    """A model's reading of why the agent asked for the limit of its first job."""
+    ask = llm_scanner(
+        question="The agent posts GPU jobs with `styx post --gpu <gpu> --time <limit> -- <command>`. Look only at what it wrote and reasoned "
+                 "before its first such call. Which of these best describes the reason it gave for that limit?",
+        answer=WHY)
+
+    async def scan(t: Transcript) -> Result:
+        return await ask(t) if t.task_set == "post" else Result(value=None)
+
+    return scan
+
