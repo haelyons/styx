@@ -182,12 +182,14 @@ def ours(path, todo, cwd):
     under one ledger, limit 60m. Yields every job's record, with its uid, why it did not succeed and for a
     todo item with a directory that directory as cwd, and its log as it ends; the log is also kept in logs/
     beside the ledger."""
-    env, t0, logs = dict(os.environ, STYX_LEDGER=os.path.abspath(path)), time.time(), os.path.join(os.path.dirname(path), "logs")
+    env, logs, said = dict(os.environ, STYX_LEDGER=os.path.abspath(path)), os.path.join(os.path.dirname(path), "logs"), []
     for gpu, cmd, *d in todo:
-        subprocess.run([sys.executable, "-m", "styx.pool", "post", "--gpu", gpu, "--time", f"{MAX_S}s", "--", cmd], cwd=(d or [cwd])[0], env=env, check=True)
-    mine = {j: p for j, p in posts(path).items() if p["t"] >= t0}
-    assert len(mine) == len(todo)
-    dirs = {j: t[2] for j, t in zip(mine, todo) if len(t) > 2}  # posted one after the other, so in the ledger's order
+        said.append(subprocess.run([sys.executable, "-m", "styx.pool", "post", "--gpu", gpu, "--time", f"{MAX_S}s", "--", cmd], cwd=(d or [cwd])[0], env=env, check=True, stdout=subprocess.PIPE, text=True).stdout)
+        print(said[-1], end="", flush=True)
+    jobs = [s.split()[0] for s in said]  # a job is named by its number on its node, and a ledger kept across nodes holds each name more than once
+    latest = posts(path)
+    mine = {j: latest[j] for j in jobs}
+    dirs = {j: t[2] for j, t in zip(jobs, todo) if len(t) > 2}
     while mine:
         time.sleep(30)
         queues = {}  # one look at each node's queue for all the jobs of a pass
