@@ -6,6 +6,7 @@ with the task's public data as MLE-bench prepares it. Needs
 """
 
 import os
+import re
 import shutil
 
 import pandas as pd
@@ -34,15 +35,32 @@ TENTH = [
 ALL = "resolutions = [(128, 128), (256, 256), (420, 540)]"
 VARIANTS = dict(full=[], epoch128=TENTH + [(ALL, "resolutions = [(128, 128)]")], epoch420=TENTH + [(ALL, "resolutions = [(420, 540)]")])
 
+# Each job's budgets: (epochs trained, what the script changes to train that many, replacements), the last being the script as published.
+# Job a trains 5, 5 and 10 epochs at three resolutions and then 10 at full size; a stage given 0 epochs trains nothing and leaves best_model.pth to the stages before it.
+STAGES = "epochs_per_resolution = [5, 5, 10]"
+FINAL = "criterion, epochs=10\n"
+EPOCHS = "num_epochs = 10"
+BUDGETS = dict(
+    a=[(5, "`epochs_per_resolution = [5, 5, 10]` is changed to `epochs_per_resolution = [5, 0, 0]` and the final stage's `epochs=10` to `epochs=0`", [(STAGES, "epochs_per_resolution = [5, 0, 0]"), (FINAL, "criterion, epochs=0\n")]),
+       (10, "`epochs_per_resolution = [5, 5, 10]` is changed to `epochs_per_resolution = [5, 5, 0]` and the final stage's `epochs=10` to `epochs=0`", [(STAGES, "epochs_per_resolution = [5, 5, 0]"), (FINAL, "criterion, epochs=0\n")]),
+       (20, "the final stage's `epochs=10` is changed to `epochs=0`", [(FINAL, "criterion, epochs=0\n")]),
+       (30, None, [])],
+    **{j: [(n, f"`num_epochs = 10` is changed to `num_epochs = {n}`", [(EPOCHS, f"num_epochs = {n}")]) for n in (2, 5)] + [(10, None, [])] for j in "cd"},
+)
 
-def denoise(job="a", variant="full"):
-    """A directory holding solution.py, changed as the variant says, description.md and input/."""
-    d = f"{ROOT}/denoise/{job}-{variant}-{os.getpid()}"  # one per process: evals run side by side
+
+def denoise(job="a", variant="full", seed=None, epochs=None):
+    """A directory holding solution.py, changed as the variant says, with every fixed seed 42 replaced by `seed` if given and the epochs
+    cut to the budget `epochs` of BUDGETS if given, description.md and input/."""
+    d = f"{ROOT}/denoise/{job}-{variant}-s{seed}-e{epochs}-{os.getpid()}"  # one per process: evals run side by side
     shutil.rmtree(d, ignore_errors=True)
     code = open(hf_hub_download(HUB, f"{CODE}{JOBS[job]}.py", repo_type="dataset", token=False)).read()
-    for old, new in VARIANTS[variant]:
+    for old, new in VARIANTS[variant] + ([] if epochs is None else next(r for e, _, r in BUDGETS[job] if e == epochs)):
         assert code.count(old) == 1, old
         code = code.replace(old, new)
+    if seed is not None:
+        code, n = re.subn(r"(seed\(|random_state=)42\b", rf"\g<1>{seed}", code)
+        assert n and not re.search(r"\b42\b", code), n
     for sub in ("train", "train_cleaned", "test"):
         shutil.copytree(f"{DATA}/public/{sub}", f"{d}/input/{sub}")
     shutil.copy(f"{DATA}/public/description.md", d)

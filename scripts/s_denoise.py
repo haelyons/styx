@@ -1,8 +1,9 @@
 """Do the denoising scripts published with PredictBeforeExecute (MLE-bench denoising-dirty-documents)
-need a GPU, what do they take and score on ours, and what does one epoch of the first on a tenth
+need a GPU, what do they take and score on ours, how much does the score of a job vary with its seed and what does it lose to fewer epochs, and what does one epoch of the first on a tenth
 of the training images cost and tell on four CPU threads of this machine?
 
 python -m scripts.s_denoise gpu <n> [job ...]        each job as published, on each GPU of the pool, n times
+python -m scripts.s_denoise sweep <n> [job ...]      each job on each GPU of the pool at each of its budgets of epochs, for seeds 42, 1, ..., n-1
 python -m scripts.s_denoise cpu <variant> <minutes>  job a: full | epoch128 | epoch420 here, on 4 threads and 8 GB
 Appends to out/denoise/denoise.jsonl, keeps logs in out/denoise/logs/ and uploads both.
 
@@ -13,6 +14,7 @@ import json
 import os
 import re
 import resource
+import shutil
 import signal
 import subprocess
 import sys
@@ -47,6 +49,28 @@ def gpu(n, jobs):
             save(r)
 
 
+def sweep(n, jobs):
+    todo, ds = [], {}
+    for job in jobs:
+        for seed in [42] + list(range(1, n)):
+            for epochs, _, _ in items.BUDGETS[job]:
+                d = items.denoise(job, seed=seed, epochs=epochs)
+                ds[d] = (job, seed, epochs)
+                todo += [(g, "python solution.py", d) for g in pool.POOL]
+    for r, log in pool.ours(f"{OUT}/ledger.jsonl", todo, None):
+        d = r.pop("cwd")
+        job, seed, epochs = ds[d]
+        r.update(where=r["gpu"], script=job, variant="sweep", **said("\n".join(log)))
+        r.update(seed=seed, epochs=epochs)  # in place of said()'s count of the epochs in the log
+        if r["state"] == "SUCCEEDED":
+            subprocess.run(["rsync", "-z", f"{pool.POOL[r['gpu']]['cluster']}:jobs/{r['uid']}/submission/submission.csv", f"{d}/submission.csv"], check=True)
+            r["test_rmse"] = items.rmse(f"{d}/submission.csv")
+            os.remove(f"{d}/submission.csv")
+        save(r)
+    for d in ds:
+        shutil.rmtree(d)
+
+
 def cpu(variant, minutes):
     d, t, lines = items.denoise("a", variant), time.time(), []
     p = subprocess.Popen(agents.CAGE + [f"{agents.CPU_ENV}/bin/python", "-u", "solution.py"], cwd=d, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
@@ -70,5 +94,10 @@ def cpu(variant, minutes):
 
 if __name__ == "__main__":
     os.makedirs(f"{OUT}/logs", exist_ok=True)
-    gpu(int(sys.argv[2]), sys.argv[3:] or list(items.JOBS)) if sys.argv[1] == "gpu" else cpu(sys.argv[2], int(sys.argv[3]))
+    if sys.argv[1] == "cpu":
+        cpu(sys.argv[2], int(sys.argv[3]))
+    elif sys.argv[1] == "gpu":
+        gpu(int(sys.argv[2]), sys.argv[3:] or list(items.JOBS))
+    else:
+        sweep(int(sys.argv[2]), sys.argv[3:] or list(items.BUDGETS))
     data.upload(OUT, f"denoise/{open('COMMIT').read().strip()}", ["*.jsonl", "logs/*"])

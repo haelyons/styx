@@ -178,13 +178,16 @@ def finalize(path):
 
 
 def ours(path, todo, cwd):
-    """Posts each (gpu, command) of ours from `cwd` under one ledger, limit 60m. Yields every job's
-    record, with its uid and why it did not succeed, and its log as it ends; the log is also kept
-    in logs/ beside the ledger."""
+    """Posts each (gpu, command) of ours from `cwd`, or each (gpu, command, directory) from its own directory,
+    under one ledger, limit 60m. Yields every job's record, with its uid, why it did not succeed and for a
+    todo item with a directory that directory as cwd, and its log as it ends; the log is also kept in logs/
+    beside the ledger."""
     env, t0, logs = dict(os.environ, STYX_LEDGER=os.path.abspath(path)), time.time(), os.path.join(os.path.dirname(path), "logs")
-    for gpu, cmd in todo:
-        subprocess.run([sys.executable, "-m", "styx.pool", "post", "--gpu", gpu, "--time", f"{MAX_S}s", "--", cmd], cwd=cwd, env=env, check=True)
+    for gpu, cmd, *d in todo:
+        subprocess.run([sys.executable, "-m", "styx.pool", "post", "--gpu", gpu, "--time", f"{MAX_S}s", "--", cmd], cwd=(d or [cwd])[0], env=env, check=True)
     mine = {j: p for j, p in posts(path).items() if p["t"] >= t0}
+    assert len(mine) == len(todo)
+    dirs = {j: t[2] for j, t in zip(mine, todo) if len(t) > 2}  # posted one after the other, so in the ledger's order
     while mine:
         time.sleep(30)
         for job, p in list(mine.items()):
@@ -195,7 +198,7 @@ def ours(path, todo, cwd):
             cause = None if r["state"] == "SUCCEEDED" else next((l[:200] for l in reversed(log) if "Error" in l), r["state"].lower())
             with open(f"{logs}/{p['uid']}.txt", "w") as f:
                 f.write("\n".join(log) + "\n")
-            yield dict(r, uid=p["uid"], cause=cause), log
+            yield dict(r, uid=p["uid"], cause=cause, **({"cwd": dirs[job]} if job in dirs else {})), log
             del mine[job]
 
 
