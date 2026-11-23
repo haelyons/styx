@@ -190,8 +190,9 @@ def ours(path, todo, cwd):
     dirs = {j: t[2] for j, t in zip(mine, todo) if len(t) > 2}  # posted one after the other, so in the ledger's order
     while mine:
         time.sleep(30)
+        queues = {}  # one look at each node's queue for all the jobs of a pass
         for job, p in list(mine.items()):
-            r = record(p, {})
+            r = record(p, queues)
             if r["state"] in LIVE.values():
                 continue
             log = text(POOL[p["gpu"]]["cluster"], int(job.split("-")[1]))
