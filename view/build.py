@@ -32,7 +32,7 @@ EPISODE = ["task", "run", "harness", "model", "agent", "episode", "condition", "
            "said_test_score", "said_test_score_low", "said_test_score_high", "ours_test_score", "score_ln",
            "first_gpu", "first_state", "first_limit_s", "first_seconds", "jobs", "failed", "usd", "usd_ours", "usd_ratio", "correct",
            "own_self_seconds", "own_self_seconds_low", "own_self_seconds_high", "agent_s", "own_self_output_tokens", "output_tokens", "own_self_tool_calls", "tool_calls"]
-OURS = ["line", "job", "metric", "gpu", "where", "variant", "seed_label", "budget", "budget_label", "state", "exit", "seconds", "score", "peak_gpu_mb", "pool_job", "truth"]
+OURS = ["line", "job", "metric", "gpu", "where", "variant", "seed_label", "budget", "budget_label", "state", "exit", "seconds", "score", "peak_gpu_mb", "pool_job", "truth", "full"]
 
 
 def episodes(df):
@@ -58,7 +58,9 @@ def ticks(domain):
 
 
 def named(j):
-    return title(f"job {j} · {items.JOBS[j][0]}", margin_top=40)
+    """The job's letter and task, what a smaller budget does to it (items.BUDGET_KIND) and whether its score does not move with its budget (items.FLAT)."""
+    marks = ([f"smaller budget: {items.BUDGET_KIND[j]}"] if j in items.BUDGET_KIND else []) + (["does not learn"] if j in items.FLAT else [])
+    return title(" · ".join([f"job {j}", items.JOBS[j][0], *marks]), margin_top=40)
 
 
 def diagonal(xdom, ydom, power=1, dash="4 4"):
@@ -101,13 +103,28 @@ def build():
            select(ep, column="run", label="Run", target=filt, filter_by=filt, multiple=True)]
     sections = []
 
-    a = positive(fc, "said_runtime_s", "ours_seconds")
-    xd, yd = span(a["ours_seconds"]), span(a["said_runtime_s"])
-    sections.append(("A", "Forecast runtime: said.RUNTIME_S against ours.seconds",
-                     f"{len(a)} of {len(fc)} forecast episodes drawn; the other {len(fc) - len(a)} gave no runtime. Dashed: forecast = truth. "
-                     "Colour: CLI. Symbol: condition. Truth is one value per job and GPU, so dots stack in columns. Table: every forecast episode.", [],
-                     [loglog(diagonal(xd, yd), dots(episodes(a), filt, "ours_seconds", "said_runtime_s", "condition", {"said s": "said_runtime_s", "ours s": "ours_seconds"}),
-                             x_label="ours.seconds (truth) →", y_label="↑ said.RUNTIME_S (forecast)", xdom=xd, ydom=yd),
+    def ranked(said):
+        """The forecast episodes with a positive `said`, its LOW only where positive, each with its rank by `said` within its job and GPU."""
+        f = positive(fc, said)
+        return f.assign(**{f"{said}_low": f[f"{said}_low"].where(f[f"{said}_low"] > 0)}, rank=f.groupby(["job", "gpu"])[said].rank(method="first"))
+
+    def against(j, d, ours, said, value, scored, label):
+        """Per GPU, job j's forecasts `said` (bar: LOW to HIGH) by their median, beside the `value` of each of our runs `ours` (black lines)."""
+        f, s = d[d["job"] == j], ours[ours["job"] == j]
+        data, y = episodes(f), span(f[said], f[f"{said}_low"], f[f"{said}_high"], s[value])
+        return plot(rule_y(runs(s), y=value, fx="gpu", stroke="black", stroke_opacity=0.7),
+                    rule_x(data, x="rank", y1=f"{said}_low", y2=f"{said}_high", fx="gpu", stroke="harness", stroke_opacity=0.35, filter_by=filt),
+                    dots(data, filt, "rank", said, "condition", {"said": said, "low": f"{said}_low", "high": f"{said}_high", "scored against": scored}, fx="gpu"),
+                    title=named(j), x_domain=[0, f["rank"].max() + 1], x_ticks=[], x_label="forecasts, by their median →", fx_label=None,
+                    y_scale="log", y_domain=y, y_ticks=ticks(y), y_tick_format="~g", y_label=label, grid=True, width=560, height=380,
+                    legend=[legend("color", frame_anchor="bottom"), legend("symbol", frame_anchor="bottom")], **CLI)
+
+    a, timed = ranked("said_runtime_s"), own[own["full"]]
+    sections.append(("A", "Forecast runtime: said.RUNTIME_S (LOW to HIGH) beside the seconds of our runs of that job and GPU",
+                     f"{len(a)} of {len(fc)} forecast episodes drawn, ordered by their median within each job and GPU; bar: LOW to HIGH; the other {len(fc) - len(a)} gave no runtime. "
+                     f"Black lines: each of our {len(timed)} runs at a job's full budget (as published and in the sweep), what a forecast's runtime is now scored against; not filtered. "
+                     "Colour: CLI. Symbol: condition. The table's 'ours s' is the truth an episode was scored against when it ran. Table: every forecast episode.", [],
+                     [against(j, a, timed, "said_runtime_s", "seconds", "ours_seconds", "↑ said.RUNTIME_S (seconds)") for j in sorted(a["job"].unique())] + [
                       rows(fc_all, filt, WHO_COLS + [num("condition"), num("gpu", width=65), num("job", width=55), num("said_runtime_s", "said s"), num("said_runtime_s_low", "low s"),
                                                      num("said_runtime_s_high", "high s"), num("ours_seconds", "ours s", ".1f"), num("runtime_ln", "ln(said/ours)", ".2f", 105), num("answered", width=90)])]))
 
@@ -138,6 +155,8 @@ def build():
     sections.append(("C", "Our runs of the jobs (out/items/items.jsonl): score against epochs per job and GPU, one dot per seed; and seconds",
                      f"{len(own)} rows, {own['score'].notna().sum()} with a score. A score is comparable only within a job (its task's metric), so each job has its own y scale. "
                      "Epochs: a sweep row's budget; a run of the script as published sits at the job's last budget. CPU runs (job a's proxies) are only in the seconds plot and the table. "
+                     "A title says whether a smaller budget cuts the job's run off or rescales it, and marks a job whose score does not move with its budget. "
+                     "In the table, truth marks the seeds a forecast's score is scored against, full the runs its runtime and memory are. "
                      "These filters act on this section only.",
                      [checkbox_group(t, column=c, label=c.capitalize(), target=mine) for c in ("job", "gpu", "variant", "state")],
                      [curve(j) for j in sorted(gpu_runs["job"].unique())] + [
@@ -147,28 +166,15 @@ def build():
                            width=900, height=90 * own["job"].nunique() + 110, legend=[legend("color", label="seed", frame_anchor="bottom"), legend("symbol", frame_anchor="bottom")], **by_seed),
                       rows(t, mine, [num("line", width=60), num("job", width=55), num("metric", width=85), num("gpu", width=65), num("variant", width=85), num("seed_label", "seed", width=65),
                                      num("budget", "epochs", width=75), num("state", width=105), num("exit", width=60), num("seconds", width=80), num("score", fmt=".5~f", width=85),
-                                     num("peak_gpu_mb", "peak MB"), num("pool_job", "pool job"), num("truth", width=70)], height=440)]))
+                                     num("peak_gpu_mb", "peak MB"), num("pool_job", "pool job"), num("truth", width=70), num("full", width=60)], height=440)]))
 
-    d = positive(fc, "said_test_score")
-    d = d.assign(said_test_score_low=d["said_test_score_low"].where(d["said_test_score_low"] > 0), rank=d.groupby(["job", "gpu"])["said_test_score"].rank(method="first"))
-    truth = own[own["truth"]]
-
-    def scored(j):
-        f, s = d[d["job"] == j], truth[truth["job"] == j]
-        data, y = episodes(f), span(f["said_test_score"], f["said_test_score_low"], f["said_test_score_high"], s["score"])
-        return plot(rule_y(runs(s), y="score", fx="gpu", stroke="black", stroke_opacity=0.7),
-                    rule_x(data, x="rank", y1="said_test_score_low", y2="said_test_score_high", fx="gpu", stroke="harness", stroke_opacity=0.35, filter_by=filt),
-                    dots(data, filt, "rank", "said_test_score", "condition", {"said": "said_test_score", "low": "said_test_score_low", "high": "said_test_score_high", "scored against": "ours_test_score"}, fx="gpu"),
-                    title=named(j), x_domain=[0, f["rank"].max() + 1], x_ticks=[], x_label="forecasts, by their median →", fx_label=None,
-                    y_scale="log", y_domain=y, y_ticks=ticks(y), y_tick_format="~g",
-                    y_label=f"↑ said.TEST_SCORE ({items.TASKS[items.JOBS[j][0]]['metric']})", grid=True, width=560, height=380,
-                    legend=[legend("color", frame_anchor="bottom"), legend("symbol", frame_anchor="bottom")], **CLI)
+    d, truth = ranked("said_test_score"), own[own["truth"]]
 
     sections.append(("D", "Forecast score: said.TEST_SCORE (LOW to HIGH) beside the seeds of our runs of that job and GPU",
                      f"{len(d)} of {len(fc)} forecast episodes drawn, ordered by their median within each job and GPU; bar: LOW to HIGH. Black lines: each of our {len(truth)} seeds at a job's full budget "
                      "(the sweep's at its last budget, else the runs as published), what a forecast is now scored against; not filtered. "
                      "The table's 'scored against' is the truth an episode was scored against when it ran.", [],
-                     [scored(j) for j in sorted(d["job"].unique())] + [
+                     [against(j, d, truth, "said_test_score", "score", "ours_test_score", f"↑ said.TEST_SCORE ({items.TASKS[items.JOBS[j][0]]['metric']})") for j in sorted(d["job"].unique())] + [
                       rows(fc_all, filt, WHO_COLS + [num("condition"), num("job", width=55), num("gpu", width=65), num("said_test_score", "said", ".4~f"), num("said_test_score_low", "low", ".4~f"),
                                                      num("said_test_score_high", "high", ".4~f"), num("ours_test_score", "scored against", ".4~f", 120), num("score_ln", "ln(said/ours)", ".2f", 105)])]))
 

@@ -34,8 +34,9 @@ def episodes():
 
 def ours():
     """`score` is items.got's; `budget` the epochs a GPU run trained: a sweep row's, the job's last budget for the script as published
-    (none for a job without BUDGETS or a CPU run); `truth` marks the seeds a forecast is scored against: per job and GPU the sweep's at the
-    full budget, else the runs as published (items.truth)."""
+    (none for a job without BUDGETS or a CPU run); `truth` marks the seeds a forecast's test score is scored against: per job and GPU the
+    sweep's at the full budget, else the runs as published; `full` the runs its seconds and memory are scored against: every run at the
+    job's full budget, as published and in the sweep (items.truth)."""
     rows = items.lines(f"{s_items.OUT}/items.jsonl")
     df = pd.DataFrame(rows).rename(columns={"job": "pool_job", "script": "job"})
     df["score"] = [items.got(r) if {"test_score", "test_rmse"} & r.keys() else math.nan for r in rows]
@@ -46,7 +47,9 @@ def ours():
     df["budget_label"] = [str(int(b)) if b == b else v for b, v in zip(df["budget"], df["variant"])]
     df["seed_label"] = ["none" if s != s else str(int(s)) for s in df.get("seed", pd.Series(math.nan, index=df.index))]
     df["line"] = range(1, len(df) + 1)
-    df["truth"] = df["uid"].isin({r["uid"] for t in items.truth(rows, set(df["gpu"])).values() for r in t["truth"]})
+    truth = items.truth(rows, set(df["gpu"])).values()
+    df["truth"] = df["uid"].isin({r["uid"] for t in truth for r in t["truth"]})
+    df["full"] = df["uid"].isin({r["uid"] for t in truth for r in t["full"]})
     return df
 
 
