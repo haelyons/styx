@@ -43,8 +43,10 @@ EFFORT = "medium"
 # are memory, and an agent that fills them or its own heap is stopped there and not by the kernel
 # on the whole machine. What goes over is killed, and the agent goes on (OOMPolicy=continue).
 # $STYX_CORES names other threads, so that evals of different agents can run side by side.
+# Every agent's scope is in styx.slice, so that all of them together can be given a limit the machine has room for:
+#   systemctl --user set-property --runtime styx.slice MemoryMax=18G MemorySwapMax=0
 def wall(gb):
-    return ["systemd-run", "--user", "--scope", "--quiet", "-p", f"MemoryMax={gb}G", "-p", "MemorySwapMax=0", "-p", "OOMPolicy=continue"]
+    return ["systemd-run", "--user", "--scope", "--quiet", "--slice=styx.slice", "-p", f"MemoryMax={gb}G", "-p", "MemorySwapMax=0", "-p", "OOMPolicy=continue"]
 
 
 WALL, CAGE = wall(2), wall(8) + ["taskset", "-c", os.environ.get("STYX_CORES", "0-3")]

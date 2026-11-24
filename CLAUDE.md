@@ -31,7 +31,7 @@ and score; before any episode, what its own run will take.
   through `styx/files.py`, and keeps its CLI's JavaScript sandbox, whose runs `exec.jsonl` records.
   None has a web tool. `peeked` records any mention of the answers.
 - An agent at a usage limit, or dead at start, is an error, never a scored answer.
-- Every agent runs under a memory limit of its own: 8 GB where it may compute, 2 GB elsewhere. Run no more episodes at once than the machine has memory for at those limits.
+- Every agent runs under a memory limit of its own: 8 GB where it may compute, 2 GB elsewhere. All of them run in `styx.slice`: give it a limit the machine has room for before running more episodes at once than fit at their own limits, and what goes over is a process of an agent's, not the machine.
 - Evals side by side take separate CPU threads (`STYX_CORES`) and, on the post task, separate pools (`STYX_POOL`).
 - Every job records seconds, exit code, peak GPU memory and GPU busy share on the node.
 - A job is charged per second it runs. Where `$STYX_HOLD` is set, the part of its limit it did not use is charged at that share of the price, and `styx info` says so. The post task runs each cell at four shares.
