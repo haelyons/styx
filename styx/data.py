@@ -20,8 +20,8 @@ ENV = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 MAX_BYTES = 50e6
 ROOT = os.path.expanduser("~/.cache/styx")
 # What of an episode is published: what it said and did, and the text files it wrote.
-KEEP = ("episode.json", "ledger.jsonl", "prompt.txt", "transcript.jsonl", "clock.txt", "stderr.txt", "answer.txt", "before/prompt.txt", "before/transcript.jsonl",
-        "before/clock.txt", "before/answer.txt", "work/*.py", "work/*.sh", "work/*.txt", "work/*.json", "work/*.log", "work/*.md")
+KEEP = ("episode.json", "ledger.jsonl", "prompt.txt", "transcript.jsonl", "clock.txt", "exec.jsonl", "stderr.txt", "answer.txt", "before/prompt.txt", "before/transcript.jsonl",
+        "before/clock.txt", "before/exec.jsonl", "before/answer.txt", "work/*.py", "work/*.sh", "work/*.txt", "work/*.json", "work/*.log", "work/*.md")
 
 
 def env():
@@ -111,7 +111,7 @@ def transcripts():
             cli, _, model = agent.partition("-")
             cell, _, epoch = sample.rpartition("-")
             columns = {k.replace(".", "_"): v if isinstance(v, (str, bool, type(None))) else float(v) if isinstance(v, (int, float)) else json.dumps(v) for k, v in row.items()}
-            stage(f"{ROOT}/{task}/{run}/{agent}/{sample}", f"{tmp}/ep", ("prompt.txt", "transcript.jsonl", "clock.txt", "before/prompt.txt", "before/transcript.jsonl", "before/clock.txt"))
+            stage(f"{ROOT}/{task}/{run}/{agent}/{sample}", f"{tmp}/ep", ("prompt.txt", "transcript.jsonl", "clock.txt", "exec.jsonl", "before/prompt.txt", "before/transcript.jsonl", "before/clock.txt", "before/exec.jsonl"))
             for part, name in ((f"{tmp}/ep", task), (f"{tmp}/ep/before", f"{task}-before")):
                 if os.path.exists(f"{part}/transcript.jsonl") and os.path.getsize(f"{part}/transcript.jsonl"):
                     whole = name == task

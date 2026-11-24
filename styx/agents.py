@@ -9,10 +9,12 @@ episode directory outside this repo.
 <episode>/transcript.jsonl the agent's own event stream, with its reasoning as its CLI gives it: a
                            summary from Claude Code and Codex, the text from OpenCode
 <episode>/clock.txt        the second each of its lines arrived
+<episode>/exec.jsonl       the JavaScript Codex ran where it has no shell, which its event stream leaves out
 <episode>/before/          the same again for the session that forecast this one
 """
 
 import asyncio
+import datetime
 import functools
 import glob
 import json
@@ -91,9 +93,13 @@ def claude(model, prompt, ep, shell):
 
 
 def codex(model, prompt, ep, shell):
-    """Without a shell Codex still runs commands, but can write nothing. Its web search is off, as the
-    web tools of the other two are. Its reasoning effort is medium, as Claude Code's is."""
-    cmd = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-c", f"model_reasoning_effort={EFFORT}", "-c", 'model_reasoning_summary="detailed"', "-c", 'web_search="disabled"', "--disable", "apps", "-s", "workspace-write" if shell else "read-only",
+    """Without a shell Codex reads its files through styx/files.py and can write nothing. It keeps
+    the JavaScript sandbox it calls every tool through, which has no files and no network; the
+    session file that holds what it ran there is kept until scripts() has read it. Its web search
+    is off, as the web tools of the other two are. Its reasoning effort is medium, as Claude Code's is."""
+    reads = ["--disable", "shell_tool", "--disable", "unified_exec", "-c", f'mcp_servers.files.command="{sys.executable}"',
+             "-c", f"mcp_servers.files.args={json.dumps([f'{HERE}/files.py', f'{ep}/work'])}"]
+    cmd = ["exec", "--json", "--skip-git-repo-check", *(["--ephemeral"] if shell else reads), "-c", f"model_reasoning_effort={EFFORT}", "-c", 'model_reasoning_summary="detailed"', "-c", 'web_search="disabled"', "--disable", "apps", "-s", "workspace-write" if shell else "read-only",
            "--add-dir", f"{ep}/spool", "-o", f"{ep}/answer.txt"]
     return cmd + (["-m", model] if model else []) + [prompt]
 
@@ -168,7 +174,7 @@ def spent(ep):
             calls += [(*began.pop(i), at) for i in done]
         elif kind == "result":
             api = e.get("duration_api_ms", 0) / 1000
-        elif kind == "item.started" and item.get("type") == "command_execution":  # Codex
+        elif kind == "item.started" and item.get("type") in ("command_execution", "mcp_tool_call"):  # Codex
             began[item["id"]] = (at, item.get("command", ""))
         elif kind == "item.completed" and item.get("id") in began:
             calls.append((*began.pop(item["id"]), at))
@@ -197,6 +203,7 @@ def messages(ep):
     lines = open(f"{ep}/transcript.jsonl").read().splitlines()
     clock = [float(x) for x in open(f"{ep}/clock.txt").read().split()] if os.path.exists(f"{ep}/clock.txt") else []
     chat, turns, called = [], {}, {}
+    ran = [json.loads(l) for l in open(f"{ep}/exec.jsonl")] if os.path.exists(f"{ep}/exec.jsonl") else []
     if os.path.exists(f"{ep}/prompt.txt"):
         chat.append(ChatMessageUser(content=open(f"{ep}/prompt.txt").read()))
 
@@ -214,12 +221,18 @@ def messages(ep):
         text = content if isinstance(content, str) else "\n".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content or [])
         chat.append(ChatMessageTool(content=text, tool_call_id=uid, function=called.get(uid), metadata={**at, **{k: v for k, v in more.items() if v not in (None, False)}}))
 
+    def script(r):  # Codex's JavaScript, in its place by its second
+        call(r["id"], {"t": r["t"]}, r["id"], "exec", r["input"])
+        result(r["id"], {"t": r["t"]}, r["output"])
+
     for i, line in enumerate(lines):
         try:
             e = json.loads(line)
         except ValueError:
             continue
         at = {"t": clock[i]} if i < len(clock) else {}
+        while ran and at and ran[0]["t"] <= at["t"]:
+            script(ran.pop(0))
         kind, item, part = e.get("type"), e.get("item") or {}, e.get("part") or {}
         if kind == "assistant":  # Claude Code: one event for each block of a message
             for b in e["message"].get("content") or []:
@@ -239,17 +252,42 @@ def messages(ep):
         elif kind == "item.completed" and item.get("type") in ("agent_message", "reasoning"):  # Codex
             turn(item["id"], at).content.append(ContentText(text=item.get("text") or "") if item["type"] == "agent_message" else ContentReasoning(reasoning=item.get("text") or ""))
         elif kind in ("item.started", "item.completed") and item.get("id") and item.get("type") not in ("agent_message", "reasoning"):
+            ours = item["type"] == "mcp_tool_call"  # a tool of styx/files.py
             if item["id"] not in called:
-                call(item["id"], at, item["id"], item["type"], {k: v for k, v in item.items() if k not in ("id", "type", "status", "aggregated_output", "exit_code")})
+                call(item["id"], at, item["id"], item["tool"] if ours else item["type"],
+                     item.get("arguments") if ours else {k: v for k, v in item.items() if k not in ("id", "type", "status", "aggregated_output", "exit_code")})
             if kind == "item.completed":
-                result(item["id"], at, item.get("aggregated_output") or "", exit_code=item.get("exit_code"), status=item.get("status"))
+                result(item["id"], at, (item.get("result") or {}).get("content") if ours else item.get("aggregated_output") or "", exit_code=item.get("exit_code"), status=item.get("status"))
         elif kind in ("text", "reasoning"):  # OpenCode
             turn(part.get("messageID"), at).content.append((ContentText if kind == "text" else ContentReasoning)(**{kind: part.get("text") or ""}))
         elif kind == "tool_use":  # one event when the call ends
             state = part.get("state") or {}
             call(part.get("messageID"), at, part["callID"], part.get("tool"), state.get("input"))
             result(part["callID"], at, state.get("output") or state.get("error") or "", status=state.get("status"))
+    for r in ran:
+        script(r)
     return chat
+
+
+def scripts(ep, t):
+    """To exec.jsonl, from the session files of a Codex that began at `t`: each JavaScript it ran,
+    what that printed, and its second of the run. Nothing else of those files is kept: they name
+    the account."""
+    rows = []
+    for f in glob.glob(f"{ep}/home/.codex/sessions/**/rollout-*.jsonl", recursive=True):
+        for line in open(f):
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+    parts = [(r["timestamp"], r["payload"]) for r in rows if isinstance(r.get("payload"), dict) and "call_id" in r["payload"]]
+    printed = {p["call_id"]: p["output"] for _, p in parts if p["type"] == "custom_tool_call_output"}
+    with open(f"{ep}/exec.jsonl", "w") as out:
+        for stamp, p in sorted(parts, key=lambda x: x[0]):
+            if p["type"] == "custom_tool_call":
+                text = printed.get(p["call_id"]) or ""
+                out.write(json.dumps(dict(t=round(datetime.datetime.fromisoformat(stamp).timestamp() - t, 2), id=p["call_id"], input=p["input"],
+                                          output=text if isinstance(text, str) else "".join(b.get("text", "") for b in text))) + "\n")
 
 
 async def burnt(p):
@@ -354,6 +392,8 @@ async def run(agent, model, prompt, files, ep, minutes, tools="pool", hold=0):
         broker.terminate()
     if agent == "codex" and open(f"{ep}/home/.codex/auth.json").read() != open(LOGIN).read():
         shutil.copy(f"{ep}/home/.codex/auth.json", LOGIN)  # a login Codex renewed goes back
+    if agent == "codex" and tools == "none":
+        scripts(ep, t)
     shutil.rmtree(f"{ep}/home", ignore_errors=True)  # no login stays in the episode
     if limit and await limit:
         raise RuntimeError("opencode did not run: usage limit reached")

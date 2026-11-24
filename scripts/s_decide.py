@@ -1,7 +1,8 @@
 """Before an agent's first job, what limit did it ask for, and what had it written and reasoned
 until then: that the limit costs nothing, a margin, a runtime? What does a model reading the
 episode say its reason for the limit was? Given a CPU to forecast with, how often did it run
-python, and what had it written and reasoned before the first time?
+python, and what had it written and reasoned before the first time? Where Codex has no shell, how
+often did it compute in the JavaScript sandbox its CLI leaves it?
 
 scout scan scripts/s_decide.py -T ~/.cache/styx/table/transcripts --scans ~/.cache/styx/scans --model anthropic/claude-haiku-5-5
 scout view --scans ~/.cache/styx/scans
@@ -78,6 +79,17 @@ def ran_python() -> Scanner[Transcript]:
         said, _, withheld = until(t, r"\bpython3?\b")
         runs = sum(bool(re.search(r"\bpython3?\b", json.dumps(c.arguments))) for m in t.messages if m.role == "assistant" for c in m.tool_calls or [])
         return Result(value=runs, explanation=said[-3000:], metadata=dict(chars=len(said), withheld=withheld))
+
+    return scan
+
+
+@scanner(messages="all")
+def ran_javascript() -> Scanner[Transcript]:
+    """How many of Codex's JavaScript runs called no tool, of how many, with those scripts. Codex calls every tool from such a run."""
+    async def scan(t: Transcript) -> Result:
+        ran = [c.arguments["input"] for m in t.messages if m.role == "assistant" for c in m.tool_calls or [] if c.function == "exec"]
+        alone = [js for js in ran if "tools." not in js]
+        return Result(value=len(alone), explanation="\n---\n".join(alone)[-3000:], metadata=dict(runs=len(ran)))
 
     return scan
 
