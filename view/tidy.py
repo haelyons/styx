@@ -21,51 +21,35 @@ from tasks import forecast, post
 # Each column the view derives, in this order, as DataFrame.eval computes it from the columns of a row; a value that is not finite is left out.
 DERIVED = dict(
     runtime_ratio="forecast_runtime_s / actual_seconds",
-    request_ratio="request_s / actual_seconds",
     margin="request_s / forecast_runtime_s",
-    request_high="request_s / forecast_runtime_s_high",
-    runtime_width="forecast_runtime_s_high / forecast_runtime_s_low",
-    score_ratio="forecast_test_score / actual_test_score",
-    published_ratio="forecast_test_score / published_test_score",
     usd_ratio="usd / usd_reference",
-    first_limit_ratio="first_limit_s / first_seconds",
-    self_seconds_ratio="forecast_self_seconds / agent_s",
-    self_tokens_ratio="forecast_self_output_tokens / output_tokens",
-    self_calls_ratio="forecast_self_tool_calls / tool_calls",
-    runtime_off="abs(log(runtime_ratio))",
-    score_off="abs(log(score_ratio))",
-    published_off="abs(log(published_ratio))",
-    self_seconds_off="abs(log(self_seconds_ratio))",
-    ln_margin="log(margin)",
-    ln_runtime_width="log(runtime_width)",
-    ln_forecast_runtime_s="log(forecast_runtime_s)",
-    ln_actual_seconds="log(actual_seconds)",
-    ln_output_tokens="log(output_tokens)",
-    seconds_gain_actual="log(actual_seconds_e / actual_seconds_e_full)",
-    seconds_gain_forecast="log(forecast_runtime_s_e / forecast_runtime_s_e_full)",
-    score_gain_actual="log(actual_test_score_e / actual_test_score_e_full)",
-    score_gain_forecast="log(forecast_test_score_e / forecast_test_score_e_full)",
+    padding_s="request_s - forecast_runtime_s",
+    width_s="forecast_runtime_s_high - forecast_runtime_s_low",
+    miss_s="abs(forecast_runtime_s - actual_seconds)",
+    runtime_pct="miss_s / actual_seconds * 100",
+    score_pct="abs(forecast_test_score - actual_test_score) / actual_test_score * 100",
+    self_seconds_pct="abs(forecast_self_seconds - agent_s) / agent_s * 100",
+    published_off="abs(log(forecast_test_score / published_test_score))",
+    seconds_gain_actual="actual_seconds_e / actual_seconds_e_full",
+    seconds_gain_forecast="forecast_runtime_s_e / forecast_runtime_s_e_full",
+    score_gain_actual="actual_test_score_e / actual_test_score_e_full",
+    score_gain_forecast="forecast_test_score_e / forecast_test_score_e_full",
 )
-# Each number a plot computes in the browser from the rows of one group of a mark, as DuckDB reads it.
+# Each number a plot computes in the browser from the rows of one group of a mark, as DuckDB reads it: ln is the natural logarithm.
 AGGREGATE = dict(
-    runtime_miss="exp(avg(runtime_off))",
-    score_miss="exp(avg(score_off))",
-    margin_mean="exp(avg(ln_margin))",
-    seconds_slope="regr_slope(seconds_gain_forecast, seconds_gain_actual)",
-    seconds_points="regr_count(seconds_gain_forecast, seconds_gain_actual)",
-    score_slope="regr_slope(score_gain_forecast, score_gain_actual)",
-    score_points="regr_count(score_gain_forecast, score_gain_actual)",
     agents="count(*)",
-    width_r="corr(ln_margin, ln_runtime_width)",
-    size_r="corr(ln_margin, ln_forecast_runtime_s)",
-    miss_r="corr(ln_margin, runtime_off)",
-    score_r="corr(score_off, runtime_off)",
-    self_r="corr(self_seconds_off, runtime_off)",
-    tokens_r="corr(runtime_off, ln_output_tokens)",
-    order_r="corr(ln_forecast_runtime_s, ln_actual_seconds)",
+    seconds_slope="regr_slope(ln(seconds_gain_forecast), ln(seconds_gain_actual))",
+    seconds_points="regr_count(seconds_gain_forecast, seconds_gain_actual)",
+    score_slope="regr_slope(ln(score_gain_forecast), ln(score_gain_actual))",
+    score_points="regr_count(score_gain_forecast, score_gain_actual)",
+    width_r="corr(ln(padding_s), ln(width_s))",
+    size_r="corr(ln(padding_s), ln(forecast_runtime_s))",
+    miss_r="corr(ln(padding_s), ln(miss_s))",
+    near_r="corr(ln(score_pct), ln(runtime_pct))",
+    self_r="corr(ln(self_seconds_pct), ln(runtime_pct))",
+    tokens_r="corr(ln(runtime_pct), ln(output_tokens))",
+    order_r="corr(ln(forecast_runtime_s), ln(actual_seconds))",
     published_near="count(*) FILTER (WHERE published_off <= ln(1.005))",
-    gpu_ratio_actual="median(actual_seconds) FILTER (WHERE gpu = 'A100') / median(actual_seconds) FILTER (WHERE gpu = 'A10')",
-    gpu_ratio_forecast="median(forecast_runtime_s) FILTER (WHERE gpu = 'A100') / median(forecast_runtime_s) FILTER (WHERE gpu = 'A10')",
 )
 # Models weakest to strongest within a CLI as far as their names say it: Claude's as its family goes, an OpenCode -flash before its
 # -pro sibling. The others keep this list's order, which their names do not give; a model not in it comes after the rest of its CLI.
@@ -87,7 +71,7 @@ def episodes():
     """A key's dots become underscores, lower case, and request.REQUEST_S is request_s; `cli` and `model` split the name `<cli>-<model>`
     of the directory that holds an agent's runs; condition, gpu and job come from its id (`<condition>-<gpu>[-<job>]-<epoch>`, no job
     being job a; on the post task the job is the item, with no condition or given GPU); `epochs` lists the smaller budgets its prompt
-    asked; published_test_score is from items.PUBLISHED."""
+    asked; published_test_score is from items.PUBLISHED, and metric names the task and its metric (items.TASKS)."""
     rows = items.lines(f"{data.ROOT}/table/episodes.jsonl")
     df = pd.DataFrame(rows).rename(columns={"request.REQUEST_S": "request_s"})
     df.columns = [c.replace(".", "_").lower() for c in df.columns]
@@ -102,6 +86,7 @@ def episodes():
     df["asked"] = [asked(r) for r in rows]
     df["epochs"] = [sorted({int(e) for k in r for e in re.findall(r"^forecast\.\w+_E(\d+)$", k)}) for r in rows]
     df["published_test_score"] = [items.PUBLISHED[j][1] if t == "forecast" else math.nan for t, j in zip(df["task"], df["job"])]
+    df["metric"] = [f"{items.JOBS[j][0]} ({items.TASKS[items.JOBS[j][0]]['metric']})" if t == "forecast" else None for t, j in zip(df["task"], df["job"])]
     return derive(df)
 
 
@@ -167,7 +152,7 @@ SOURCE = dict(answered=forecast.error, runtime_in=forecast.timed, score_in=forec
               tool_calls=agents.answer, actual_seconds=forecast.measured, actual_test_score=forecast.measured, usd=post.cost, usd_reference=post.reference,
               first_gpu=(data, "FIRST"), first_limit_s=(data, "FIRST"), first_seconds=(data, "FIRST"), published_test_score=(items, "PUBLISHED"), asked=asked,
               epochs=budgets, kind=budgets, actual_seconds_e=budgets, actual_test_score_e=budgets, budget=runs, cli=episodes, model=episodes,
-              condition=episodes, gpu=episodes, job=episodes)
+              condition=episodes, gpu=episodes, job=episodes, metric=episodes)
 
 
 def source(name, fn):

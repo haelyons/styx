@@ -58,11 +58,6 @@ def compact(df):
     return df.astype({c: "category" for c in df.columns if pd.api.types.is_string_dtype(df[c])}).reset_index(drop=True)
 
 
-def fits(name, left, right):
-    """The width of a plot whose title `name` sits over its frame, between margins `left` and `right`, without being cut."""
-    return left - right + 11 * len(name)
-
-
 def positive(df, *cols):
     """The rows a log axis can draw."""
     return df[(df[list(cols)] > 0).all(axis=1)].reset_index(drop=True)
