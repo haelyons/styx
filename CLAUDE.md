@@ -26,7 +26,7 @@ and score; before any episode, what its own run will take.
 - Agents reach the pool only through `styx`. They are never given `sky`.
 - The agent's working directory is outside this repo. `out/` holds the reference answers.
 - Agents write only in their episode. Claude Code and OpenCode run in a bubblewrap jail: they cannot
-  read this repo, and their shells have the network. Codex runs under its own sandbox: no network,
+  read this repo nor see a process that is not their own, and their shells have the network. Codex runs under its own sandbox: no network,
   but it can read this repo. Where it may not run code it has no shell: it reads its episode's files
   through `styx/files.py`, and keeps its CLI's JavaScript sandbox, whose runs `exec.jsonl` records.
   None has a web tool. `peeked` records any mention of the answers.

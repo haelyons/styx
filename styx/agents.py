@@ -67,11 +67,12 @@ OPEN = dict(
 def jail(agent, ep):
     """bubblewrap for Claude Code, whose own sandbox does not start where the kernel restricts
     nested user namespaces, and for OpenCode, which has none: the system read-only, the home
-    directory empty but for the CLI, its account and the episode. The network stays. Codex runs
-    under its own sandbox: no network, writes only in the episode, everything readable."""
+    directory empty but for the CLI, its account and the episode, and no process to see or signal
+    but its own. The network stays. Codex runs under its own sandbox: no network, writes only in the
+    episode, everything readable."""
     return ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", HOME, *OPEN[agent](ep),
             "--ro-bind-try", CPU_ENV, CPU_ENV, "--ro-bind-try", f"{HOME}/.local/share/uv/python", f"{HOME}/.local/share/uv/python",
-            "--bind", ep, ep, "--die-with-parent"]
+            "--bind", ep, ep, "--unshare-pid", "--die-with-parent"]
 
 
 def account(path):
