@@ -114,7 +114,7 @@ BUDGETS = dict(
 # What a smaller budget does to each job's run. cut: the same run stops early, as nothing in the script is keyed to its epochs (job a's stages
 # get 0 epochs under one ReduceLROnPlateau). rescaled: the whole run changes, as job j's OneCycleLR has total_steps = len(train_loader) * num_epochs.
 BUDGET_KIND = dict(a="cut", c="cut", d="cut", f="cut", g="cut", h="cut", i="cut", j="rescaled", k="cut")
-# Jobs whose test score does not move with their budget: job c's five seeds scored 0.49 to 0.61 at 2 epochs and 0.54 to 0.56 at 10, on both GPUs.
+# Jobs whose test score does not get better with their budget: job c's five seeds scored 0.34 to 0.38 at 1 epoch, 0.49 to 0.61 at 2 and 0.54 to 0.56 at 10, on both GPUs.
 FLAT = {"c"}
 # A fixed seed of a script: a seed(...) call, as in torch.cuda.manual_seed_all(42), or a random_state.
 SEED = r"(seed(?:_all)?\(|random_state=)42\b"
