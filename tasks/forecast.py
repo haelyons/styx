@@ -5,8 +5,8 @@ run of ours of the script at its full budget, and how often do those runs fall i
 Are its answers nearer than a forecast that knows nothing of the script, the mean of our other jobs
 on that GPU whose grade moves with their epochs? Is its grade nearer than that mean of the same
 task's jobs, than the grade of the task's sample submission, and than the grade published for the
-script, which remembering it would give? What grade does it say the same script earns when it
-trains for fewer epochs, and how often do the grades of our runs fall inside its range? The time
+script, which remembering it would give? What does it say the same script takes and earns when it
+trains for fewer epochs, and how often do our runs' seconds and grades fall inside its ranges? The time
 limit it requests is priced: a run killed at its limit is run again in full, and each second of the
 limit the run does not use is charged at a share of a second of running. Does the agent request the
 limit that costs least? And before it starts, what does it say its own run will take?
@@ -63,12 +63,15 @@ ANSWERS = ("PredictBeforeExecute", "styx-data", "items.jsonl", "denoise.jsonl", 
 def measured():
     """Per job and GPU, the median seconds and peak GPU memory of every run of ours of the script at its
     full budget (items.truth's `full`) and the seconds of each, the test score of every seed at the full
-    budget and at each smaller budget of items.BUDGETS that was swept, and the median of the full budget's."""
+    budget and at each smaller budget of items.BUDGETS that was swept (`budgets`), the median of the full
+    budget's, and the seconds of every run at each smaller budget (`took`)."""
     ours = {}
     for (j, g), t in items.truth(items.lines(f"{REPO}/out/items/items.jsonl"), pool.POOL).items():
         runs, score = t["full"], [items.got(r) for r in t["truth"]]
+        small = {e: s for e, s in t["seeds"].items() if e != items.BUDGETS[j][-1][0]}
         ours[j, g] = dict({q: statistics.median(r[q] for r in runs) for q in ("seconds", "peak_gpu_mb")}, test_score=statistics.median(score), n=len(runs),
-                          runs=[r["seconds"] for r in runs], score=score, budgets={e: [items.got(r) for r in s] for e, s in t["seeds"].items() if e != items.BUDGETS[j][-1][0]})
+                          runs=[r["seconds"] for r in runs], score=score, budgets={e: [items.got(r) for r in s] for e, s in small.items()},
+                          took={e: [r["seconds"] for r in s] for e, s in small.items()})
     return ours
 
 
@@ -111,6 +114,16 @@ def grade(said, seeds, base, e=None):
     return {f"{k}{s.lower()}": v for k, v in value.items()}
 
 
+def timed(said, runs, e=None):
+    """What the forecast of the seconds at budget `e` (None the full run) says against our runs': error of
+    the median, share of runs in its 10th to 90th range, pinball loss. Keys end in _e<epochs> but for the
+    full run's."""
+    s = "" if e is None else f"_E{e}"
+    low, mid, high = (said[f"RUNTIME_S{s}{q}"] for q in ("_LOW", "", "_HIGH"))
+    value = dict(runtime_err=off(mid, statistics.median(runs)), runtime_in=inside(runs, low, high), runtime_pin=pinball(runs, low, mid, high))
+    return {f"{k}{s.lower()}": v for k, v in value.items()}
+
+
 def request_cost(request, runs):
     """The mean over our runs of seconds t of what a run costs per second it takes, at a limit of
     `request` seconds: (t + HOLD * (request - t)) / t within the limit, (request + t) / t past it, where
@@ -145,9 +158,8 @@ def error():
         said, own = agents.numbers(state.output.completion, state.metadata["keys"]), state.metadata["own"]
         value = dict(
             answered=not any(map(math.isnan, said.values())),
-            runtime_err=off(said["RUNTIME_S"], real["seconds"]),
-            runtime_in=inside(real["runs"], said["RUNTIME_S_LOW"], said["RUNTIME_S_HIGH"]),
-            runtime_pin=pinball(real["runs"], said["RUNTIME_S_LOW"], said["RUNTIME_S"], said["RUNTIME_S_HIGH"]),
+            **(took := timed(said, real["runs"])),
+            **{k: v for e, runs in real["took"].items() for k, v in timed(said, runs, e).items()},
             runtime_pin_base=pinball(real["runs"], base["seconds"], base["seconds"], base["seconds"]),
             memory_err=off(said["PEAK_GPU_MB"], real["peak_gpu_mb"]),
             **(full := grade(said, real["score"], base)),
@@ -160,12 +172,12 @@ def error():
             **agents.own(own, run),
         )
         row = {**run, **value, "item": state.sample_id, "epoch": state.epoch, "budget_kind": items.BUDGET_KIND[state.metadata["job"]], "said": said, "own": own, "ours": {q: real[q] for q in ("seconds", "peak_gpu_mb", "test_score", "n")},
-               "seeds": dict(seconds=real["runs"], score=real["score"], **{f"score_e{e}": v for e, v in real["budgets"].items()})}
+               "seeds": dict(seconds=real["runs"], score=real["score"], **{f"score_e{e}": v for e, v in real["budgets"].items()}, **{f"seconds_e{e}": v for e, v in real["took"].items()})}
         with open(f"{ep}/episode.json", "w") as f:
             json.dump(row, f, indent=1)
         await asyncio.to_thread(data.push, os.path.dirname(os.path.dirname(ep)))
         # Inspect takes each key's mean over the samples and wants every sample to have it: a budget of another job's is nan here
-        return Score(value={**{f"{k}_e{e}": math.nan for e in budgets for k in full}, **value}, answer=json.dumps(said))
+        return Score(value={**{f"{k}_e{e}": math.nan for e in budgets for k in {**full, **took}}, **value}, answer=json.dumps(said))
 
     return score
 
@@ -175,12 +187,13 @@ def forecast(agent="claude", model=None):
     ours = measured()
     dirs = {j: items.item(j) for j in {j for j, _ in ours}}
     budget = lambda j, g: [(e, phrase) for e, phrase, _ in items.BUDGETS[j] if e in ours[j, g]["budgets"]]
-    grades = lambda s: tuple(f"TEST_SCORE{s}{q}" for q in ("", "_LOW", "_HIGH"))
+    three = lambda k, s="": tuple(f"{k}{s}{q}" for q in ("", "_LOW", "_HIGH"))
     metric = lambda j: items.TASKS[items.JOBS[j][0]]["metric"]
-    lines = lambda j, g: "".join(f"\nTEST_SCORE_E{e}=<the grade, its {metric(j)}, if {phrase}, your median>\nTEST_SCORE_E{e}_LOW=<10th percentile>\nTEST_SCORE_E{e}_HIGH=<90th percentile>" for e, phrase in budget(j, g))
+    lines = lambda j, g: "".join(f"\nRUNTIME_S_E{e}=<wall-clock seconds of the run if {phrase}, your median>\nRUNTIME_S_E{e}_LOW=<10th percentile>\nRUNTIME_S_E{e}_HIGH=<90th percentile>"
+                                 f"\nTEST_SCORE_E{e}=<the grade of that run, its {metric(j)}, your median>\nTEST_SCORE_E{e}_LOW=<10th percentile>\nTEST_SCORE_E{e}_HIGH=<90th percentile>" for e, phrase in budget(j, g))
     samples = [
         Sample(id=f"{c}-{g}-{j}", input=PROMPT.format(gpu=g, gb=pool.POOL[g]["gb"], means=text, metric=metric(j), budgets=lines(j, g), hold=HOLD),
-               metadata=dict(item=dirs[j], job=j, gpu=g, tools=tools, keys=KEYS + grades("") + sum((grades(f"_E{e}") for e, _ in budget(j, g)), ())))
+               metadata=dict(item=dirs[j], job=j, gpu=g, tools=tools, keys=KEYS + three("TEST_SCORE") + sum((three(k, f"_E{e}") for e, _ in budget(j, g) for k in ("RUNTIME_S", "TEST_SCORE")), ())))
         for j, g in ours for c, (text, tools) in MEANS.items()
     ]
     return Task(dataset=samples, solver=forecasts(agent, model), scorer=error())
