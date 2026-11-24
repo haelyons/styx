@@ -1,264 +1,194 @@
-"""Each row as it is: what did an agent forecast a job would take, need and score, and what limit would it ask? What did its first
-posted job ask and take, and what did its jobs cost against ours? What did it say its own run would take? And what do our own runs
-of the jobs take and score, seed by seed and budget by budget?
+"""Build Results (index.html) and Analysis (analysis.html) from one frozen input snapshot.
 
-python -m view.build                  writes view/dist/index.html from the episodes table, out/items/items.jsonl and the eval logs as they are now
-python -m http.server -d view/dist    serves it on http://localhost:8000
+python -m view.build
+python -m http.server -d view/dist
 
-One Inspect Viz HtmlPage: one in-browser DuckDB and one selection for every widget, so the bar at the top filters every episode
-view; our own runs have filters of their own. The data is inline; the scripts come from cdn.jsdelivr.net.
+--root reads published episode directories or table/episodes.jsonl. --items and
+--reference select reference JSONL files; --snapshot supplies HF revision metadata.
+No evaluations, jobs, or network requests are made by this builder.
 """
 
-import html
-import os
+import argparse
+import ast
+import hashlib
+import json
+import math
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
 
-from inspect_viz import Data, Selection
-from inspect_viz.input import checkbox_group, select
-from inspect_viz.mark import dot, line, rule_x, rule_y, title
-from inspect_viz.plot import HtmlPage, legend, plot
-from inspect_viz.table import column, table
-from inspect_viz.view import sample_heatmap, scores_heatmap
+from plotly.offline import get_plotlyjs
 
-from styx import items
-from view import tidy
-
-OUT = "view/dist"
-CLI = dict(color_domain=["claude", "codex", "opencode"], color_range=["#2a78d6", "#eb6834", "#1baf7a"])  # fixed order, by harness
-SEEDS = ["#9a9a96", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948", "#2a78d6", "#1baf7a"]
-SIDE = 440
-WHO = {"agent": "agent", "episode": "episode", "run": "run"}
-EPISODE = ["task", "run", "harness", "model", "agent", "episode", "condition", "gpu", "job", "answered", "rank",
-           "said_runtime_s", "said_runtime_s_low", "said_runtime_s_high", "said_request_s", "ours_seconds", "runtime_ln", "runtime_ratio", "margin",
-           "said_test_score", "said_test_score_low", "said_test_score_high", "ours_test_score", "score_ln",
-           "first_gpu", "first_state", "first_limit_s", "first_seconds", "jobs", "failed", "usd", "usd_ours", "usd_ratio", "correct",
-           "own_self_seconds", "own_self_seconds_low", "own_self_seconds_high", "agent_s", "own_self_output_tokens", "output_tokens", "own_self_tool_calls", "tool_calls"]
-OURS = ["line", "job", "metric", "gpu", "where", "variant", "seed_label", "budget", "budget_label", "state", "exit", "seconds", "score", "peak_gpu_mb", "pool_job", "truth", "full"]
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parent
 
 
-def episodes(df):
-    return Data.from_dataframe(df.reindex(columns=EPISODE).reset_index(drop=True))
+def clean(value):
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: clean(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [clean(v) for v in value]
+    return value
 
 
-def runs(df):
-    return Data.from_dataframe(df[OURS].reset_index(drop=True))
+def flat(value, prefix=""):
+    out = {}
+    for k, v in value.items():
+        key = prefix + k
+        if isinstance(v, dict):
+            out.update(flat(v, key + "."))
+        elif not isinstance(v, list):
+            out[key] = v
+    return out
 
 
-def positive(df, *cols):
-    """The rows a log axis can draw."""
-    return df[(df[list(cols)] > 0).all(axis=1)].reset_index(drop=True)
+def load_lines(path, sources, warnings):
+    if not path.exists():
+        warnings.append(f"Not available: {path.name}")
+        return []
+    blob = path.read_bytes()
+    sources.append(dict(file=str(path), sha256=hashlib.sha256(blob).hexdigest(), bytes=len(blob)))
+    rows = []
+    for n, line in enumerate(blob.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            rows.append((n, clean(json.loads(line))))
+        except (ValueError, UnicodeDecodeError):
+            warnings.append(f"{path.name}, line {n}: invalid or incomplete JSON; not included")
+    return rows
 
 
-def span(*series, pad=1.3):
-    return [min(s[s > 0].min() for s in series) / pad, max(s.max() for s in series) * pad]
+def catalogue():
+    """Read descriptive literals without importing task runners or their dependencies."""
+    tree = ast.parse((REPO / "styx/items.py").read_text())
+    names, jobs, metrics = {}, {}, {}
+    for n in tree.body:
+        if not isinstance(n, ast.Assign):
+            continue
+        try:
+            value = ast.literal_eval(n.value)
+            for target in n.targets:
+                if isinstance(target, ast.Tuple):
+                    names.update({t.id: v for t, v in zip(target.elts, value)})
+                elif isinstance(target, ast.Name):
+                    names[target.id] = value
+        except (ValueError, TypeError):
+            pass
+        if any(isinstance(t, ast.Name) and t.id == "TASKS" for t in n.targets):
+            for key, value in zip(n.value.keys, n.value.values):
+                metrics[key.id] = next(ast.literal_eval(k.value) for k in value.keywords if k.arg == "metric")
+        if any(isinstance(t, ast.Name) and t.id == "JOBS" for t in n.targets):
+            for k in n.value.keywords:
+                task, script = k.value.elts
+                jobs[k.arg] = dict(task=names.get(task.id, task.id), script=ast.literal_eval(script), metric=metrics.get(task.id))
+    return jobs
 
 
-def ticks(domain):
-    """1, 1.5, 2, 3, 5 and 7 times the powers of ten inside a log axis's domain: its own ticks leave narrow ones bare."""
-    return [m * 10.0**k for k in range(-4, 6) for m in (1, 1.5, 2, 3, 5, 7) if domain[0] <= m * 10.0**k <= domain[1]]
+def snapshot(args):
+    sources, warnings, episodes, jobs = [], [], {}, []
+    root = args.root
+    meta = json.loads(args.snapshot.read_text()) if args.snapshot else {}
+    revision = meta.get("sha", "main")
+    hub = f"https://huggingface.co/datasets/hal2k/styx-data/blob/{revision}/"
+    # Prefer original records; use the flattened table only for episodes absent locally.
+    paths = sorted(root.glob("*/*/*/*/episode.json"))
+    records = []
+    for p in paths:
+        blob = p.read_bytes()
+        sources.append(dict(file=str(p.relative_to(root)), sha256=hashlib.sha256(blob).hexdigest(), bytes=len(blob)))
+        try:
+            value = clean(json.loads(blob))
+        except ValueError:
+            warnings.append(f"{p.relative_to(root)}: incomplete episode record")
+            continue
+        task, run, agent, episode = p.parts[-5:-1]
+        records.append((dict(task=task, run=run, agent=agent, episode=episode), value, p.parent))
+    table = root / "table/episodes.jsonl"
+    if table.exists():
+        for _, row in load_lines(table, sources, warnings):
+            identity = {k: row[k] for k in ("task", "run", "agent", "episode")}
+            records.append((identity, row, None))
+    for identity, raw, directory in records:
+        key = "/".join(identity.values())
+        if key in episodes:
+            # The table can add timing measurements absent from the episode JSON.
+            supplemental = flat(raw)
+            episodes[key]["fields"] = {**supplemental, **episodes[key]["fields"]}
+            episodes[key]["table_record"] = raw
+            continue
+        f = flat(raw)
+        task, run, agent, episode = identity.values()
+        cell = episode.rsplit("-", 1)[0]
+        parts = cell.split("-")
+        condition, gpu, workload = (parts[0], parts[1], parts[2] if len(parts) > 2 else "a") if task == "forecast" else ("n/a", "n/a", str(raw.get("cell", cell)).split("@")[0])
+        # Canonical aliases are for display only; the original record stays intact.
+        for suffix in ("", "_LOW", "_HIGH"):
+            if f"said.TEST_SCORE{suffix}" not in f:
+                f[f"said.TEST_SCORE{suffix}"] = f.get(f"said.TEST_RMSE{suffix}")
+        if "ours.test_score" not in f:
+            f["ours.test_score"] = f.get("ours.test_rmse")
+        prompt = (directory / "prompt.txt").read_text() if directory and (directory / "prompt.txt").exists() else None
+        status = "timed out" if raw.get("late") else "agent error" if raw.get("exit") not in (None, 0) else "incomplete answer" if raw.get("answered") is False else "recorded"
+        e = dict(identity, id=key, condition=condition, gpu=gpu, workload=workload,
+                 harness=agent.partition("-")[0], model=agent.partition("-")[2] or "not recorded",
+                 status=status, fields=f, raw=raw, prompt=prompt, url=hub+key+"/episode.json",
+                 transcript=hub+key+"/transcript.jsonl", prompt_url=hub+key+"/prompt.txt")
+        episodes[key] = e
+        posted = raw.get("posted")
+        if isinstance(posted, list):
+            for i, job in enumerate(posted):
+                jobs.append(dict(id=f"{key}/job/{i+1}", episode_id=key, agent=agent, run=run, workload=workload,
+                                 condition=condition, gpu=job.get("gpu", "not recorded"), order=i+1,
+                                 fields=flat(job), raw=job, complete=True))
+        elif any(k.startswith("first.") for k in f):
+            job = {k[6:]: v for k, v in f.items() if k.startswith("first.")}
+            jobs.append(dict(id=key+"/job/1", episode_id=key, agent=agent, run=run, workload=workload,
+                             condition=condition, gpu=job.get("gpu", "not recorded"), order=1, fields=job, raw=job, complete=False))
+    refs = []
+    for kind, path in (("training", args.items), ("inference", args.reference)):
+        for line, raw in load_lines(path, sources, warnings):
+            refs.append(dict(id=f"{kind}/{line}", agent="reference", run="reference", condition="reference",
+                             workload=raw.get("script", "a") if kind == "training" else raw.get("cell", "unknown"),
+                             gpu=raw.get("gpu") or raw.get("where", "unknown"), kind=kind,
+                             fields=flat(raw), raw=raw))
+    if not episodes:
+        raise SystemExit("No episode records found. Supply --root pointing to a downloaded dataset or the collection machine's cache.")
+    try:
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()
+    except (OSError, subprocess.CalledProcessError):
+        commit = "unavailable"
+    return clean(dict(episodes=list(episodes.values()), jobs=jobs, references=refs, workloads=catalogue(),
+                     meta=dict(built=datetime.now(timezone.utc).isoformat(), code=commit,
+                               view_files={p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (HERE / "build.py", HERE / "app.js", HERE / "style.css")},
+                               revision=meta.get("sha"), published=meta.get("lastModified"), sources=sources, warnings=warnings)))
 
 
-def named(j):
-    """The job's letter and task, what a smaller budget does to it (items.BUDGET_KIND) and whether its score does not move with its budget (items.FLAT)."""
-    marks = ([f"smaller budget: {items.BUDGET_KIND[j]}"] if j in items.BUDGET_KIND else []) + (["does not learn"] if j in items.FLAT else [])
-    return title(" · ".join([f"job {j}", items.JOBS[j][0], *marks]), margin_top=40)
-
-
-def diagonal(xdom, ydom, power=1, dash="4 4"):
-    """y = x**power across both domains, clipped to the frame."""
-    lo, hi = min(xdom[0], ydom[0]), max(xdom[1], ydom[1])
-    return line(x=[lo, hi], y=[lo**power, hi**power], clip=True, stroke="#777", stroke_dasharray=dash)
-
-
-def loglog(*marks, x_label, y_label, xdom, ydom, fmt=None):
-    return plot(*marks, x_scale="log", y_scale="log", x_domain=xdom, y_domain=ydom, x_label=x_label, y_label=y_label, x_tick_format=fmt, y_tick_format=fmt,
-                grid=True, width=SIDE, height=SIDE, legend=[legend("color", frame_anchor="bottom"), legend("symbol", frame_anchor="bottom")], **CLI)
-
-
-def dots(data, filt, x, y, symbol, extra, **options):
-    return dot(data, x=x, y=y, fill="harness", symbol=symbol, filter_by=filt, r=4, fill_opacity=0.65, channels=WHO | extra, **options)
-
-
-def rows(data, filt, cols, width=980, height=SIDE + 80):
-    return table(data, filter_by=filt, columns=cols, width=width, height=height, pagination=True)
-
-
-def num(name, label=None, fmt=None, width=85):
-    return column(name, label=label or name, format=fmt, width=width)
-
-
-WHO_COLS = [num("agent", width=190), num("episode", width=125), num("run", width=125)]
-
-
-def build():
-    eps, own = tidy.episodes(), tidy.ours()
-    page, filt, mine = HtmlPage(), Selection.crossfilter(), Selection.intersect()
-    fc, po = (eps[eps["task"] == t].reset_index(drop=True) for t in ("forecast", "post"))
-    ep, fc_all, t = episodes(eps), episodes(fc), runs(own)
-    bar = [select(ep, column="task", label="Task", target=filt, filter_by=filt),
-           checkbox_group(ep, column="harness", label="CLI", target=filt, filter_by=filt),
-           select(ep, column="model", label="Model", target=filt, filter_by=filt, multiple=True),
-           checkbox_group(ep, column="condition", label="Condition", target=filt, filter_by=filt),
-           checkbox_group(ep, column="gpu", label="GPU", target=filt, filter_by=filt),
-           select(ep, column="job", label="Job", target=filt, filter_by=filt, multiple=True),
-           select(ep, column="run", label="Run", target=filt, filter_by=filt, multiple=True)]
-    sections = []
-
-    def ranked(said):
-        """The forecast episodes with a positive `said`, its LOW only where positive, each with its rank by `said` within its job and GPU."""
-        f = positive(fc, said)
-        return f.assign(**{f"{said}_low": f[f"{said}_low"].where(f[f"{said}_low"] > 0)}, rank=f.groupby(["job", "gpu"])[said].rank(method="first"))
-
-    def against(j, d, ours, said, value, scored, label):
-        """Per GPU, job j's forecasts `said` (bar: LOW to HIGH) by their median, beside the `value` of each of our runs `ours` (black lines)."""
-        f, s = d[d["job"] == j], ours[ours["job"] == j]
-        data, y = episodes(f), span(f[said], f[f"{said}_low"], f[f"{said}_high"], s[value])
-        return plot(rule_y(runs(s), y=value, fx="gpu", stroke="black", stroke_opacity=0.7),
-                    rule_x(data, x="rank", y1=f"{said}_low", y2=f"{said}_high", fx="gpu", stroke="harness", stroke_opacity=0.35, filter_by=filt),
-                    dots(data, filt, "rank", said, "condition", {"said": said, "low": f"{said}_low", "high": f"{said}_high", "scored against": scored}, fx="gpu"),
-                    title=named(j), x_domain=[0, f["rank"].max() + 1], x_ticks=[], x_label="forecasts, by their median →", fx_label=None,
-                    y_scale="log", y_domain=y, y_ticks=ticks(y), y_tick_format="~g", y_label=label, grid=True, width=560, height=380,
-                    legend=[legend("color", frame_anchor="bottom"), legend("symbol", frame_anchor="bottom")], **CLI)
-
-    a, timed = ranked("said_runtime_s"), own[own["full"]]
-    sections.append(("A", "Forecast runtime: said.RUNTIME_S (LOW to HIGH) beside the seconds of our runs of that job and GPU",
-                     f"{len(a)} of {len(fc)} forecast episodes drawn, ordered by their median within each job and GPU; bar: LOW to HIGH; the other {len(fc) - len(a)} gave no runtime. "
-                     f"Black lines: each of our {len(timed)} runs at a job's full budget (as published and in the sweep), what a forecast's runtime is now scored against; not filtered. "
-                     "Colour: CLI. Symbol: condition. The table's 'ours s' is the truth an episode was scored against when it ran. Table: every forecast episode.", [],
-                     [against(j, a, timed, "said_runtime_s", "seconds", "ours_seconds", "↑ said.RUNTIME_S (seconds)") for j in sorted(a["job"].unique())] + [
-                      rows(fc_all, filt, WHO_COLS + [num("condition"), num("gpu", width=65), num("job", width=55), num("said_runtime_s", "said s"), num("said_runtime_s_low", "low s"),
-                                                     num("said_runtime_s_high", "high s"), num("ours_seconds", "ours s", ".1f"), num("runtime_ln", "ln(said/ours)", ".2f", 105), num("answered", width=90)])]))
-
-    b = positive(fc, "margin", "runtime_ratio")
-    xd, yd = span(b["runtime_ratio"]), span(b["margin"])
-    sections.append(("B", "Forecast limit: said.REQUEST_S / said.RUNTIME_S against said.RUNTIME_S / ours.seconds",
-                     f"{len(b)} of {len(fc)} forecast episodes drawn. Solid grey: 1 on each axis. Dotted: request = truth (y = 1/x); below it the requested limit is shorter than our run.", [],
-                     [loglog(rule_x(x=[1], stroke="#999"), rule_y(y=[1], stroke="#999"), diagonal(xd, yd, power=-1, dash="1 3"),
-                             dots(episodes(b), filt, "runtime_ratio", "margin", "condition", {"request s": "said_request_s", "said s": "said_runtime_s", "ours s": "ours_seconds"}),
-                             x_label="said.RUNTIME_S / ours.seconds (forecast error) →", y_label="↑ said.REQUEST_S / said.RUNTIME_S (margin)", xdom=xd, ydom=yd, fmt="~g"),
-                      rows(fc_all, filt, WHO_COLS + [num("condition"), num("gpu", width=65), num("job", width=55), num("said_request_s", "request s"), num("said_runtime_s", "said s"),
-                                                     num("ours_seconds", "ours s", ".1f"), num("margin", "margin", ".2f"), num("runtime_ratio", "said/ours", ".2f")])]))
-
-    seeds = ["none"] + sorted({s for s in own["seed_label"] if s != "none"}, key=int)
-    by_seed = dict(color_domain=seeds, color_range=(SEEDS * len(seeds))[:len(seeds)])
-    gpu_runs = own[own["where"].ne("cpu") & (own["score"] > 0)]
-
-    def curve(j):
-        g = gpu_runs[gpu_runs["job"] == j]
-        epochs, y = sorted({e for e, _, _ in items.BUDGETS.get(j, [])} | set(g["budget"].dropna())), span(g["score"], pad=1.05)
-        return plot(dot(runs(g), x="budget", y="score", fx="gpu", fill="seed_label", symbol="variant", r=4, fill_opacity=0.8, filter_by=mine,
-                        channels={"line": "line", "variant": "variant", "seed": "seed_label", "epochs": "budget", "score": "score", "seconds": "seconds", "pool job": "pool_job"}),
-                    title=named(j), x_scale="log", x_domain=[epochs[0] / 1.3, epochs[-1] * 1.3], x_ticks=epochs, x_tick_format="~g", x_label="epochs →",
-                    y_scale="log", y_domain=y, y_ticks=ticks(y), y_tick_format="~g", y_label=f"↑ {items.TASKS[items.JOBS[j][0]]['metric']}", fx_label=None, grid=True, width=SIDE, height=320,
-                    legend=[legend("color", label="seed", frame_anchor="bottom"), legend("symbol", frame_anchor="bottom")], **by_seed)
-
-    labels = sorted({l for l in own["budget_label"] if l.isdigit()}, key=int) + sorted({l for l in own["budget_label"] if not l.isdigit()})
-    sections.append(("C", "Our runs of the jobs (out/items/items.jsonl): score against epochs per job and GPU, one dot per seed; and seconds",
-                     f"{len(own)} rows, {own['score'].notna().sum()} with a score. A score is comparable only within a job (its task's metric), so each job has its own y scale. "
-                     "Epochs: a sweep row's budget; a run of the script as published sits at the job's last budget. CPU runs (job a's proxies) are only in the seconds plot and the table. "
-                     "A title says whether a smaller budget cuts the job's run off or rescales it, and marks a job whose score does not move with its budget. "
-                     "In the table, truth marks the seeds a forecast's score is scored against, full the runs its runtime and memory are. "
-                     "These filters act on this section only.",
-                     [checkbox_group(t, column=c, label=c.capitalize(), target=mine) for c in ("job", "gpu", "variant", "state")],
-                     [curve(j) for j in sorted(gpu_runs["job"].unique())] + [
-                      plot(dot(t, x="budget_label", y="seconds", fx="gpu", fy="job", fill="seed_label", symbol="state", r=4, fill_opacity=0.8, filter_by=mine,
-                               channels={"line": "line", "variant": "variant", "seed": "seed_label", "epochs": "budget_label", "state": "state", "seconds": "seconds", "pool job": "pool_job"}),
-                           y_scale="log", y_label="↑ seconds", x_domain=labels, x_tick_rotate=-40, margin_bottom=70, x_label="epochs (or variant) →", fx_label=None, fy_label=None, grid=True,
-                           width=900, height=90 * own["job"].nunique() + 110, legend=[legend("color", label="seed", frame_anchor="bottom"), legend("symbol", frame_anchor="bottom")], **by_seed),
-                      rows(t, mine, [num("line", width=60), num("job", width=55), num("metric", width=85), num("gpu", width=65), num("variant", width=85), num("seed_label", "seed", width=65),
-                                     num("budget", "epochs", width=75), num("state", width=105), num("exit", width=60), num("seconds", width=80), num("score", fmt=".5~f", width=85),
-                                     num("peak_gpu_mb", "peak MB"), num("pool_job", "pool job"), num("truth", width=70), num("full", width=60)], height=440)]))
-
-    d, truth = ranked("said_test_score"), own[own["truth"]]
-
-    sections.append(("D", "Forecast score: said.TEST_SCORE (LOW to HIGH) beside the seeds of our runs of that job and GPU",
-                     f"{len(d)} of {len(fc)} forecast episodes drawn, ordered by their median within each job and GPU; bar: LOW to HIGH. Black lines: each of our {len(truth)} seeds at a job's full budget "
-                     "(the sweep's at its last budget, else the runs as published), what a forecast is now scored against; not filtered. "
-                     "The table's 'scored against' is the truth an episode was scored against when it ran.", [],
-                     [against(j, d, truth, "said_test_score", "score", "ours_test_score", f"↑ said.TEST_SCORE ({items.TASKS[items.JOBS[j][0]]['metric']})") for j in sorted(d["job"].unique())] + [
-                      rows(fc_all, filt, WHO_COLS + [num("condition"), num("job", width=55), num("gpu", width=65), num("said_test_score", "said", ".4~f"), num("said_test_score_low", "low", ".4~f"),
-                                                     num("said_test_score_high", "high", ".4~f"), num("ours_test_score", "scored against", ".4~f", 120), num("score_ln", "ln(said/ours)", ".2f", 105)])]))
-
-    e1, e2 = positive(po, "first_limit_s", "first_seconds"), positive(po, "usd_ratio")
-    xd, yd = span(e1["first_seconds"]), span(e1["first_limit_s"])
-    sections.append(("E", "Post: first job's limit against its seconds; and usd / usd_ours",
-                     f"Left: {len(e1)} of {len(po)} post episodes posted a first job. Symbol: its state. Right: {len(e2)} of {len(po)} spent money (usd > 0); dashed: same cost as ours. Colour: CLI.", [],
-                     [loglog(diagonal(xd, yd), dots(episodes(e1), filt, "first_seconds", "first_limit_s", "first_state", {"gpu": "first_gpu", "state": "first_state", "limit s": "first_limit_s", "seconds": "first_seconds"}),
-                             x_label="first.seconds →", y_label="↑ first.limit_s", xdom=xd, ydom=yd),
-                      plot(rule_x(x=[1], stroke="#777", stroke_dasharray="4 4"),
-                           dot(episodes(e2), x="usd_ratio", y="job", fill="harness", filter_by=filt, r=4, fill_opacity=0.65, channels=WHO | {"usd": "usd", "usd_ours": "usd_ours", "jobs": "jobs", "correct": "correct"}),
-                           x_scale="log", x_tick_format="~g", x_label="usd / usd_ours →", y_label=None, grid=True, width=SIDE, height=300, margin_left=110, legend=legend("color", frame_anchor="bottom"), **CLI),
-                      rows(episodes(po), filt, WHO_COLS + [num("job", width=120), num("first_gpu", "gpu", width=65), num("first_state", "state", width=105), num("first_limit_s", "limit s"),
-                                                           num("first_seconds", "seconds"), num("jobs", width=60), num("failed", width=65), num("usd", fmt=".4~f", width=75),
-                                                           num("usd_ours", fmt=".4~f"), num("usd_ratio", "usd/ours", ".2f"), num("correct", width=80)])]))
-
-    f1, f2 = positive(eps, "own_self_seconds", "agent_s"), positive(eps, "own_self_output_tokens", "output_tokens")
-    x1, y1, x2, y2 = span(f1["agent_s"]), span(f1["own_self_seconds"]), span(f2["output_tokens"]), span(f2["own_self_output_tokens"])
-    sections.append(("F", "Own run: own.SELF_SECONDS against agent_s; own.SELF_OUTPUT_TOKENS against output_tokens",
-                     f"Left: {len(f1)} of {len(eps)} episodes; right: {len(f2)} of {len(eps)} (earlier runs did not ask, and zeros cannot sit on a log axis). Symbol: task. Table: every episode.", [],
-                     [loglog(diagonal(x1, y1), dots(episodes(f1), filt, "agent_s", "own_self_seconds", "task", {"said s": "own_self_seconds", "low": "own_self_seconds_low", "high": "own_self_seconds_high", "agent s": "agent_s"}),
-                             x_label="agent_s →", y_label="↑ own.SELF_SECONDS", xdom=x1, ydom=y1),
-                      loglog(diagonal(x2, y2), dots(episodes(f2), filt, "output_tokens", "own_self_output_tokens", "task", {"said": "own_self_output_tokens", "actual": "output_tokens"}),
-                             x_label="output_tokens →", y_label="↑ own.SELF_OUTPUT_TOKENS", xdom=x2, ydom=y2),
-                      rows(ep, filt, WHO_COLS + [num("task", width=75), num("own_self_seconds", "said s"), num("own_self_seconds_low", "low s"), num("own_self_seconds_high", "high s"),
-                                                 num("agent_s", "agent s"), num("own_self_output_tokens", "said tok", width=90), num("output_tokens", "out tok", width=90),
-                                                 num("own_self_tool_calls", "said calls", width=90), num("tool_calls", "calls", width=70)])]))
-
-    sections.append(prebuilt())
-    return render(page, bar, sections, eps, own)
-
-
-def prebuilt():
-    """The library's own heatmaps of the eval logs, by the real model."""
-    ev, sa = tidy.evals(), tidy.samples()
-    ev = ev[(ev["status"] == "success") & (ev["task_name"] == "post")]
-    keep = ["id", "model", "s_correct", "s_runtime_in"]
-    post, fc = (Data.from_dataframe(sa.loc[sa["task_name"] == t].reindex(columns=keep).reset_index(drop=True)) for t in ("post", "forecast"))
-    return ("G", "Inspect Viz's prebuilt heatmaps of the .eval logs",
-            f"{len(ev)} post logs with status success, {len(sa)} samples; not filtered by the bar above. Models are the logs' agent and model args (opencode names keep their slash). "
-            "A cell averages every log or sample in it; white is a share of 0 or no sample at all.", [],
-            [scores_heatmap(Data.from_dataframe(ev[["run", "model", "score_correct_mean"]].reset_index(drop=True)), task_name="run", model_name="model", score_value="score_correct_mean",
-                            title="scores_heatmap: post, correct share per log, run × model", width=900, height=520, margin_left=280, x_tick_rotate=-30, margin_bottom=90),
-             sample_heatmap(post, id="id", model_name="model", score_value="s_correct", title="sample_heatmap: post, correct share per sample id", width=900, height=520, margin_left=280),
-             sample_heatmap(fc, id="id", model_name="model", score_value="s_runtime_in", title="sample_heatmap: forecast, share with runtime in LOW..HIGH per sample id",
-                            width=900, height=560, margin_left=280, x_tick_rotate=-45, margin_bottom=90)])
-
-
-def render(page, bar, sections, eps, own):
-    inputs = lambda comps, cls: f'<details class="{cls}" open><summary>Filters</summary><div>' + "".join(f"<div>{page.fragment(c)}</div>" for c in comps) + "</div></details>"
-    parts = [inputs(bar, "bar"), f'<p class="nav">{" · ".join(f"<a href=#{k}>{k}</a>" for k, *_ in sections)} — the filters above act on A, B, D, E and F; C has its own. '
-             f'{len(eps)} episodes in {eps["run"].nunique()} runs; {len(own)} runs of ours. Hover a point for its episode; tables sort and filter by column.</p>']
-    for key, title, note, ins, comps in sections:
-        parts.append(f'<section id="{key}"><h2>{key}. {html.escape(title)}</h2><p class="note">{html.escape(note)}</p>'
-                     + (inputs(ins, "filters") if ins else "") + '<div class="row">' + "".join(f"<div>{page.fragment(c)}</div>" for c in comps) + "</div></section>")
-    return PAGE.format(head=page.head(), body="\n".join(parts))
-
-
-PAGE = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>styx episodes</title>
-<style>
-body {{ margin: 0; padding: 0 16px 40px; background: #fcfcfb; color: #0b0b0b; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", Arial, sans-serif; }}
-.bar > div, .filters > div {{ display: flex; flex-wrap: wrap; gap: 4px 28px; align-items: flex-end; padding: 2px 0 8px; }}
-.bar {{ position: sticky; top: 0; z-index: 10; background: #fcfcfb; border-bottom: 1px solid #ccc; max-height: 70vh; overflow-y: auto; }}
-summary {{ cursor: pointer; font-size: 13px; font-weight: 600; padding: 8px 0; }}
-.bar .mosaic-widget, .filters .mosaic-widget {{ margin: 0 !important; }}
-.nav {{ font-size: 13px; color: #52514e; }}
-section {{ margin-top: 28px; scroll-margin-top: 110px; }}
-h2 {{ font-size: 17px; margin: 0 0 4px; }}
-.note {{ color: #52514e; font-size: 13px; margin: 0 0 8px; max-width: 1100px; }}
-.row {{ display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }}
-.row > div {{ max-width: 100%; overflow-x: auto; }}
-@media (max-width: 800px) {{ body {{ padding: 0 10px 40px; }} section {{ scroll-margin-top: 50px; }} }}
-</style>
-{head}
-</head><body>
-{body}
-<script>if (matchMedia("(max-width: 800px)").matches) document.querySelectorAll("details").forEach(d => d.open = false);</script>
-</body></html>
-"""
+def build(args):
+    data = snapshot(args)
+    payload = json.dumps(data, allow_nan=False, separators=(",", ":")).replace("<", "\\u003c")
+    css, js = (HERE / "style.css").read_text(), (HERE / "app.js").read_text()
+    args.out.mkdir(parents=True, exist_ok=True)
+    for mode, name in (("results", "index.html"), ("analysis", "analysis.html")):
+        title = mode.capitalize()
+        document = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Styx · {title}</title><style>{css}</style><script>{get_plotlyjs()}</script></head>
+<body data-page="{mode}"><header><a class="brand" href="index.html">Styx</a><nav aria-label="Pages"><a href="index.html" {'aria-current="page"' if mode == 'results' else ''}>Results</a><a href="analysis.html" {'aria-current="page"' if mode == 'analysis' else ''}>Analysis</a></nav><button id="download">Download snapshot</button></header>
+<main><div id="intro"></div><div id="filters" aria-label="Filters"></div><p id="counts" aria-live="polite"></p><div id="content"></div></main>
+<dialog id="detail"><button id="close">Close</button><div id="detail-content"></div></dialog>
+<script id="snapshot" type="application/json">{payload}</script><script>{js}</script></body></html>'''
+        (args.out / name).write_text(document)
+        print(f"{args.out / name}: {len(data['episodes'])} recorded episodes, {len(data['jobs'])} job records, {len(data['references'])} reference executions")
+    (args.out / "snapshot.json").write_text(json.dumps(data, allow_nan=False))
 
 
 if __name__ == "__main__":
-    os.makedirs(OUT, exist_ok=True)
-    with open(f"{OUT}/index.html", "w") as f:
-        f.write(build())
-    print(f"{OUT}/index.html", os.path.getsize(f"{OUT}/index.html"), "bytes")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=Path.home() / ".cache/styx")
+    parser.add_argument("--items", type=Path, default=REPO / "out/items/items.jsonl")
+    parser.add_argument("--reference", type=Path, default=REPO / "out/reference.jsonl")
+    parser.add_argument("--snapshot", type=Path)
+    parser.add_argument("--out", type=Path, default=HERE / "dist")
+    build(parser.parse_args())

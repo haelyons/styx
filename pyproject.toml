@@ -2,7 +2,7 @@
 name = "styx"
 version = "0"
 requires-python = ">=3.11"
-dependencies = ["skypilot[lambda]==0.14.2", "inspect-ai", "inspect-scout", "inspect-viz", "anthropic", "huggingface_hub"]
+dependencies = ["skypilot[lambda]==0.14.2", "inspect-ai", "inspect-scout", "inspect-viz", "plotly>=6,<7", "anthropic", "huggingface_hub"]
 
 [project.scripts]
 styx = "styx.pool:main"
