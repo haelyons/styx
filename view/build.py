@@ -27,6 +27,7 @@ CLI = dict(color_domain=["claude", "codex", "opencode"], color_range=["#2a78d6",
 SEEDS = ["#9a9a96", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948", "#2a78d6", "#1baf7a"]
 SIDE = 440
 WHO = {"agent": "agent", "episode": "episode", "run": "run"}
+BESIDE = dict(y_label_anchor="center", margin_left=70)  # a titled plot's y label runs up its axis: at the top it would sit under the title
 EPISODE = ["task", "run", "harness", "model", "agent", "episode", "condition", "gpu", "job", "answered", "rank",
            "said_runtime_s", "said_runtime_s_low", "said_runtime_s_high", "said_request_s", "ours_seconds", "runtime_ln", "runtime_ratio", "margin",
            "said_test_score", "said_test_score_low", "said_test_score_high", "ours_test_score", "score_ln",
@@ -116,7 +117,7 @@ def build():
                     rule_x(data, x="rank", y1=f"{said}_low", y2=f"{said}_high", fx="gpu", stroke="harness", stroke_opacity=0.35, filter_by=filt),
                     dots(data, filt, "rank", said, "condition", {"said": said, "low": f"{said}_low", "high": f"{said}_high", "scored against": scored}, fx="gpu"),
                     title=named(j), x_domain=[0, f["rank"].max() + 1], x_ticks=[], x_label="forecasts, by their median →", fx_label=None,
-                    y_scale="log", y_domain=y, y_ticks=ticks(y), y_tick_format="~g", y_label=label, grid=True, width=560, height=380,
+                    y_scale="log", y_domain=y, y_ticks=ticks(y), y_tick_format="~g", y_label=label, **BESIDE, grid=True, width=560, height=380,
                     legend=[legend("color", frame_anchor="bottom"), legend("symbol", frame_anchor="bottom")], **CLI)
 
     a, timed = ranked("said_runtime_s"), own[own["full"]]
@@ -124,7 +125,7 @@ def build():
                      f"{len(a)} of {len(fc)} forecast episodes drawn, ordered by their median within each job and GPU; bar: LOW to HIGH; the other {len(fc) - len(a)} gave no runtime. "
                      f"Black lines: each of our {len(timed)} runs at a job's full budget (as published and in the sweep), what a forecast's runtime is now scored against; not filtered. "
                      "Colour: CLI. Symbol: condition. The table's 'ours s' is the truth an episode was scored against when it ran. Table: every forecast episode.", [],
-                     [against(j, a, timed, "said_runtime_s", "seconds", "ours_seconds", "↑ said.RUNTIME_S (seconds)") for j in sorted(a["job"].unique())] + [
+                     [against(j, a, timed, "said_runtime_s", "seconds", "ours_seconds", "said.RUNTIME_S (seconds)") for j in sorted(a["job"].unique())] + [
                       rows(fc_all, filt, WHO_COLS + [num("condition"), num("gpu", width=65), num("job", width=55), num("said_runtime_s", "said s"), num("said_runtime_s_low", "low s"),
                                                      num("said_runtime_s_high", "high s"), num("ours_seconds", "ours s", ".1f"), num("runtime_ln", "ln(said/ours)", ".2f", 105), num("answered", width=90)])]))
 
@@ -148,7 +149,7 @@ def build():
         return plot(dot(runs(g), x="budget", y="score", fx="gpu", fill="seed_label", symbol="variant", r=4, fill_opacity=0.8, filter_by=mine,
                         channels={"line": "line", "variant": "variant", "seed": "seed_label", "epochs": "budget", "score": "score", "seconds": "seconds", "pool job": "pool_job"}),
                     title=named(j), x_scale="log", x_domain=[epochs[0] / 1.3, epochs[-1] * 1.3], x_ticks=epochs, x_tick_format="~g", x_label="epochs →",
-                    y_scale="log", y_domain=y, y_ticks=ticks(y), y_tick_format="~g", y_label=f"↑ {items.TASKS[items.JOBS[j][0]]['metric']}", fx_label=None, grid=True, width=SIDE, height=320,
+                    y_scale="log", y_domain=y, y_ticks=ticks(y), y_tick_format="~g", y_label=items.TASKS[items.JOBS[j][0]]["metric"], fx_label=None, **BESIDE, grid=True, width=560, height=320,
                     legend=[legend("color", label="seed", frame_anchor="bottom"), legend("symbol", frame_anchor="bottom")], **by_seed)
 
     labels = sorted({l for l in own["budget_label"] if l.isdigit()}, key=int) + sorted({l for l in own["budget_label"] if not l.isdigit()})
@@ -174,7 +175,7 @@ def build():
                      f"{len(d)} of {len(fc)} forecast episodes drawn, ordered by their median within each job and GPU; bar: LOW to HIGH. Black lines: each of our {len(truth)} seeds at a job's full budget "
                      "(the sweep's at its last budget, else the runs as published), what a forecast is now scored against; not filtered. "
                      "The table's 'scored against' is the truth an episode was scored against when it ran.", [],
-                     [against(j, d, truth, "said_test_score", "score", "ours_test_score", f"↑ said.TEST_SCORE ({items.TASKS[items.JOBS[j][0]]['metric']})") for j in sorted(d["job"].unique())] + [
+                     [against(j, d, truth, "said_test_score", "score", "ours_test_score", f"said.TEST_SCORE ({items.TASKS[items.JOBS[j][0]]['metric']})") for j in sorted(d["job"].unique())] + [
                       rows(fc_all, filt, WHO_COLS + [num("condition"), num("job", width=55), num("gpu", width=65), num("said_test_score", "said", ".4~f"), num("said_test_score_low", "low", ".4~f"),
                                                      num("said_test_score_high", "high", ".4~f"), num("ours_test_score", "scored against", ".4~f", 120), num("score_ln", "ln(said/ours)", ".2f", 105)])]))
 
