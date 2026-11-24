@@ -3,7 +3,8 @@ statoil-iceberg-classifier-challenge, stanford-covid-vaccine) need a GPU, what d
 of the training images cost and tell on four CPU threads of this machine?
 
 python -m scripts.s_items gpu <n> [job ...]        each job as published, on each GPU of the pool, n times
-python -m scripts.s_items sweep <n> [job ...]      each job on each GPU of the pool at each of its budgets of epochs, for seeds 42, 1, ..., n-1
+python -m scripts.s_items sweep <n> [job ...]      each job on each GPU of the pool at each of its budgets of epochs, for seeds 42, 1, ..., n-1;
+                                                   a run that out/items/items.jsonl already has is not made again
 python -m scripts.s_items cpu <variant> <minutes>  job a: full | epoch128 | epoch420 here, on 4 threads and 8 GB
 Appends to out/items/items.jsonl, keeps logs in out/items/logs/ and uploads both.
 
@@ -72,12 +73,15 @@ def gpu(n, jobs):
 
 def sweep(n, jobs):
     todo, ds = [], {}
+    have = {(r["script"], r["gpu"], r["seed"], r["epochs"]) for r in items.lines(f"{OUT}/items.jsonl") if r.get("variant") == "sweep" and r.get("state") == "SUCCEEDED"}
     for job in jobs:
         for seed in [42] + list(range(1, n)):
             for epochs, _, _ in items.BUDGETS[job]:
-                d = items.item(job, seed=seed, epochs=epochs)
-                ds[d] = (job, seed, epochs)
-                todo += [(g, command(job), d) for g in pool.POOL]
+                lacking = [g for g in pool.POOL if (job, g, seed, epochs) not in have]
+                if lacking:
+                    d = items.item(job, seed=seed, epochs=epochs)
+                    ds[d] = (job, seed, epochs)
+                    todo += [(g, command(job), d) for g in lacking]
         place(job)
     for r, log in pool.ours(f"{OUT}/ledger.jsonl", todo, None):
         d = r.pop("cwd")

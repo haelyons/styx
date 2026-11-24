@@ -104,12 +104,12 @@ BUDGETS = dict(
        (10, "`epochs_per_resolution = [5, 5, 10]` is changed to `epochs_per_resolution = [5, 5, 0]` and the final stage's `epochs=10` to `epochs=0`", [(STAGES, "epochs_per_resolution = [5, 5, 0]"), (FINAL, "criterion, epochs=0\n")]),
        (20, "the final stage's `epochs=10` is changed to `epochs=0`", [(FINAL, "criterion, epochs=0\n")]),
        (30, None, [])],
-    **{j: cut(EPOCHS, "num_epochs = {}", (2, 5, 10)) for j in "cd"},
+    **{j: cut(EPOCHS, "num_epochs = {}", (1, 2, 5, 10)) for j in "cd"},
     f=cut("epochs = 5", "epochs = {}", (1, 3, 5)),
     g=cut("num_epochs = 5", "num_epochs = {}", (1, 3, 5)),
-    h=cut("for epoch in range(20):", "for epoch in range({}):", (5, 10, 20)),
-    i=cut("for epoch in range(50):", "for epoch in range({}):", (5, 15, 50)),
-    **{j: cut("num_epochs = 20", "num_epochs = {}", (5, 10, 20)) for j in "jk"},
+    h=cut("for epoch in range(20):", "for epoch in range({}):", (1, 5, 10, 20)),
+    i=cut("for epoch in range(50):", "for epoch in range({}):", (1, 5, 15, 50)),
+    **{j: cut("num_epochs = 20", "num_epochs = {}", (1, 5, 10, 20)) for j in "jk"},
 )
 # What a smaller budget does to each job's run. cut: the same run stops early, as nothing in the script is keyed to its epochs (job a's stages
 # get 0 epochs under one ReduceLROnPlateau). rescaled: the whole run changes, as job j's OneCycleLR has total_steps = len(train_loader) * num_epochs.
