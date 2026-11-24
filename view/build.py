@@ -1,22 +1,27 @@
-"""Each row as it is: what did an agent forecast a job would take, need and score, and what limit would it ask? What did its first
-posted job ask and take, and what did its jobs cost against ours? What did it say its own run would take? And what do our own runs
-of the jobs take and score, seed by seed and budget by budget?
+"""Each row as it is: which episodes were run, task by prompt, model, condition, GPU and job? What did an agent forecast a job would
+take, need and score, at its full budget and at each smaller one, and what limit would it ask? What did its first posted job ask and
+take, and what did its jobs cost against ours? What did it say its own run would take? And what do our own runs of the jobs take and
+score, seed by seed and budget by budget?
 
-python -m view.build                  writes view/dist/index.html from the episodes table, out/items/items.jsonl and the eval logs as they are now
-python -m http.server -d view/dist    serves it on http://localhost:8000
+python -m view.build [dir]            writes index.html and questions.html (view.questions) to dir, view/dist by default, from the
+                                      episodes table, the episodes' own files, out/items/items.jsonl and the eval logs as they are now
+python -m http.server -d view/dist    serves them on http://localhost:8000
 
-One Inspect Viz HtmlPage: one in-browser DuckDB and one selection for every widget, so the bar at the top filters every episode
+One Inspect Viz HtmlPage per page: one in-browser DuckDB and one selection for every widget, so the bar at the top filters every episode
 view; our own runs have filters of their own. The data is inline; the scripts come from cdn.jsdelivr.net.
 """
 
 import html
 import os
+import sys
 
+import pandas as pd
 from inspect_viz import Data, Selection
 from inspect_viz.input import checkbox_group, select
-from inspect_viz.mark import dot, line, rule_x, rule_y, title
+from inspect_viz.mark import cell, dot, line, rule_x, rule_y, text, title
 from inspect_viz.plot import HtmlPage, legend, plot
 from inspect_viz.table import column, table
+from inspect_viz.transform import count
 from inspect_viz.view import sample_heatmap, scores_heatmap
 
 from styx import items
@@ -26,9 +31,12 @@ OUT = "view/dist"
 CLI = dict(color_domain=["claude", "codex", "opencode"], color_range=["#2a78d6", "#eb6834", "#1baf7a"])  # fixed order, by harness
 SEEDS = ["#9a9a96", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948", "#2a78d6", "#1baf7a"]
 SIDE = 440
+WIDE = 620  # a plot titled with its job, as wide as its longest title
 WHO = {"agent": "agent", "episode": "episode", "run": "run"}
 BESIDE = dict(y_label_anchor="center", margin_left=70)  # a titled plot's y label runs up its axis: at the top it would sit under the title
-EPISODE = ["task", "run", "harness", "model", "agent", "episode", "condition", "gpu", "job", "answered", "rank",
+BAR = ["task", "harness", "model", "condition", "gpu", "job", "run", "asked"]  # what the bar filters on: every table it filters has them
+KEY = ["task", "asked", "harness", "model", "condition", "gpu", "job"]  # an episode's cell of what was run
+EPISODE = ["task", "run", "harness", "model", "agent", "episode", "condition", "gpu", "job", "asked", "answered", "rank",
            "said_runtime_s", "said_runtime_s_low", "said_runtime_s_high", "said_request_s", "ours_seconds", "runtime_ln", "runtime_ratio", "margin",
            "said_test_score", "said_test_score_low", "said_test_score_high", "ours_test_score", "score_ln",
            "first_gpu", "first_state", "first_limit_s", "first_seconds", "jobs", "failed", "usd", "usd_ours", "usd_ratio", "correct",
@@ -42,6 +50,11 @@ def episodes(df):
 
 def runs(df):
     return Data.from_dataframe(df[OURS].reset_index(drop=True))
+
+
+def compact(df):
+    """The rows with each column of text as a dictionary of its values, which keeps an inline table small."""
+    return df.astype({c: "category" for c in df.columns if pd.api.types.is_string_dtype(df[c])}).reset_index(drop=True)
 
 
 def positive(df, *cols):
@@ -90,19 +103,74 @@ def num(name, label=None, fmt=None, width=85):
 WHO_COLS = [num("agent", width=190), num("episode", width=125), num("run", width=125)]
 
 
+def bar(ep, filt):
+    """The filters of every episode view, on the columns of BAR."""
+    return [select(ep, column="task", label="Task", target=filt, filter_by=filt),
+            checkbox_group(ep, column="harness", label="CLI", target=filt, filter_by=filt),
+            select(ep, column="model", label="Model", target=filt, filter_by=filt, multiple=True),
+            checkbox_group(ep, column="condition", label="Condition", target=filt, filter_by=filt),
+            checkbox_group(ep, column="gpu", label="GPU", target=filt, filter_by=filt),
+            select(ep, column="job", label="Job", target=filt, filter_by=filt, multiple=True),
+            select(ep, column="run", label="Run", target=filt, filter_by=filt, multiple=True),
+            select(ep, column="asked", label="Prompt asked", target=filt, filter_by=filt, multiple=True)]
+
+
+def matrix(eps, filt):
+    """Every episode in one cell of KEY: a plot of counts per task and prompt, and the same cells as a table."""
+    assert eps.groupby(KEY).size().sum() == len(eps), "an episode outside every cell"
+
+    def counts(d):
+        task, asked, models, jobs = d["task"].iloc[0], d["asked"].iloc[0], tidy.ordered(d), sorted(d["job"].unique())
+        facets, rows_ = (dict(fx="gpu", fy="condition"), d["condition"].nunique()) if task == "forecast" else ({}, 1)
+        data = Data.from_dataframe(compact(d[BAR + ["episode"]]))
+        return plot(cell(data, x="job", y="model", fill=count(), filter_by=filt, inset=0.5, **facets),
+                    text(data, x="job", y="model", text=count(), filter_by=filt, fill="#0b0b0b", **facets),
+                    title=title(f"{task} · {asked}", margin_top=40), x_domain=jobs, y_domain=models, x_label=None, y_label=None, fx_label=None, fy_label=None,
+                    x_tick_rotate=-30 if task == "post" else 0, margin_left=250, margin_bottom=70 if task == "post" else 30, margin_right=60,
+                    width=max(310 + 30 * len(jobs) * d["gpu"].nunique(), 9 * len(f"{task} · {asked}") + 60), height=18 * len(models) * rows_ + 120, color_scale="log", color_range=["#e3edfa", "#6f9fe0"])
+
+    every = Data.from_dataframe(compact(eps[BAR + ["episode"]].assign(answered=eps["answered"].astype(float))))  # DuckDB sums no booleans
+    cols = [num(c, width=w) for c, w in zip(KEY, (75, 300, 80, 250, 80, 65, 120))] + [column({"count": "episode"}, label="scored", width=75), column({"sum": "answered"}, label="answered", width=100)]
+    return ("M", "What was run: an episode's task, the keys its prompt asked, CLI, model, condition, GPU and job", "", [],
+            [counts(d) for _, d in sorted(eps.groupby(["task", "asked"]), key=lambda g: (g[0][0], g[1]["run"].min()))]
+            + [(rows(every, filt, cols, width=1220), ["fill, text, scored = count(*)", "answered = sum(answered)", *tidy.defined(*KEY, "answered")])])
+
+
+def at_budgets(eps, filt):
+    """Each forecast episode at each budget its prompt asked: per job, what it said against epochs, our runs as black dots, and the rows."""
+    said = [f"said_{q}_e{x}" for q in ("runtime_s", "test_score") for x in ("", "_low", "_high")]
+    b = tidy.budgets(eps).assign(uid=lambda d: d["run"] + "/" + d["agent"] + "/" + d["episode"]).sort_values(["uid", "epochs"])
+    cols, seeds = BAR + ["agent", "episode", "uid", "epochs", "kind", *said, "ours_median_s", "ours_median_score"], tidy.seeds(b)
+
+    def per(j, data, f, s, y, ours, label):
+        g, o = positive(f, y), s[s[ours] > 0]
+        epochs, dom = sorted(set(f["epochs"]) | set(o["epochs"])), span(g[y], o[ours])
+        return plot(line(data, x="epochs", y=y, z="uid", fx="gpu", stroke="harness", stroke_opacity=0.35, filter_by=filt),
+                    dot(data, x="epochs", y=y, fx="gpu", fill="harness", r=2, fill_opacity=0.5, filter_by=filt, channels=WHO | {"epochs": "epochs", "said": y}),
+                    dot(Data.from_dataframe(compact(o[["gpu", "epochs", ours]])), x="epochs", y=ours, fx="gpu", fill="black", r=2.5),
+                    title=named(j), x_scale="log", x_domain=[epochs[0] / 1.3, epochs[-1] * 1.3], x_ticks=epochs, x_tick_format="~g", x_label="epochs",
+                    y_scale="log", y_domain=dom, y_ticks=ticks(dom), y_tick_format="~g", y_label=label, fx_label=None, **BESIDE, grid=True, width=WIDE, height=320,
+                    legend=legend("color", frame_anchor="bottom"), **CLI)
+
+    plots = []
+    for j in sorted(b["job"].unique()):
+        f, s = b[b["job"] == j], seeds[seeds["job"] == j]
+        data = Data.from_dataframe(compact(f[cols]))
+        plots += [per(j, data, f, s, "said_test_score_e", "test_score", f"said_test_score_e ({items.TASKS[items.JOBS[j][0]]['metric']})"),
+                  per(j, data, f, s, "said_runtime_s_e", "seconds", "said_runtime_s_e (seconds)")]
+    table_cols = WHO_COLS + [num("condition"), num("gpu", width=65), num("job", width=55), num("epochs", width=85)] + [
+        num(c, fmt=".4~f" if "score" in c else None, width=190) for c in said] + [num("ours_median_s", fmt=".1f", width=140), num("ours_median_score", fmt=".4~f", width=160)]
+    return ("R", "Forecasts at each budget, as rows: what an episode said a job's run takes and scores at each number of epochs, beside the medians of ours", "", [],
+            plots + [(rows(Data.from_dataframe(compact(b[cols])), filt, table_cols, width=1220),
+                      [*tidy.defined("epochs", *said, "ours_median_s", "ours_median_score"), f"black dots: {tidy.source('seeds', tidy.seeds)}"])])
+
+
 def build():
     eps, own = tidy.episodes(), tidy.ours()
     page, filt, mine = HtmlPage(), Selection.crossfilter(), Selection.intersect()
     fc, po = (eps[eps["task"] == t].reset_index(drop=True) for t in ("forecast", "post"))
     ep, fc_all, t = episodes(eps), episodes(fc), runs(own)
-    bar = [select(ep, column="task", label="Task", target=filt, filter_by=filt),
-           checkbox_group(ep, column="harness", label="CLI", target=filt, filter_by=filt),
-           select(ep, column="model", label="Model", target=filt, filter_by=filt, multiple=True),
-           checkbox_group(ep, column="condition", label="Condition", target=filt, filter_by=filt),
-           checkbox_group(ep, column="gpu", label="GPU", target=filt, filter_by=filt),
-           select(ep, column="job", label="Job", target=filt, filter_by=filt, multiple=True),
-           select(ep, column="run", label="Run", target=filt, filter_by=filt, multiple=True)]
-    sections = []
+    sections = [matrix(eps, filt), at_budgets(eps, filt)]
 
     def ranked(said):
         """The forecast episodes with a positive `said`, its LOW only where positive, each with its rank by `said` within its job and GPU."""
@@ -117,7 +185,7 @@ def build():
                     rule_x(data, x="rank", y1=f"{said}_low", y2=f"{said}_high", fx="gpu", stroke="harness", stroke_opacity=0.35, filter_by=filt),
                     dots(data, filt, "rank", said, "condition", {"said": said, "low": f"{said}_low", "high": f"{said}_high", "scored against": scored}, fx="gpu"),
                     title=named(j), x_domain=[0, f["rank"].max() + 1], x_ticks=[], x_label="forecasts, by their median →", fx_label=None,
-                    y_scale="log", y_domain=y, y_ticks=ticks(y), y_tick_format="~g", y_label=label, **BESIDE, grid=True, width=560, height=380,
+                    y_scale="log", y_domain=y, y_ticks=ticks(y), y_tick_format="~g", y_label=label, **BESIDE, grid=True, width=WIDE, height=380,
                     legend=[legend("color", frame_anchor="bottom"), legend("symbol", frame_anchor="bottom")], **CLI)
 
     a, timed = ranked("said_runtime_s"), own[own["full"]]
@@ -149,7 +217,7 @@ def build():
         return plot(dot(runs(g), x="budget", y="score", fx="gpu", fill="seed_label", symbol="variant", r=4, fill_opacity=0.8, filter_by=mine,
                         channels={"line": "line", "variant": "variant", "seed": "seed_label", "epochs": "budget", "score": "score", "seconds": "seconds", "pool job": "pool_job"}),
                     title=named(j), x_scale="log", x_domain=[epochs[0] / 1.3, epochs[-1] * 1.3], x_ticks=epochs, x_tick_format="~g", x_label="epochs →",
-                    y_scale="log", y_domain=y, y_ticks=ticks(y), y_tick_format="~g", y_label=items.TASKS[items.JOBS[j][0]]["metric"], fx_label=None, **BESIDE, grid=True, width=560, height=320,
+                    y_scale="log", y_domain=y, y_ticks=ticks(y), y_tick_format="~g", y_label=items.TASKS[items.JOBS[j][0]]["metric"], fx_label=None, **BESIDE, grid=True, width=WIDE, height=320,
                     legend=[legend("color", label="seed", frame_anchor="bottom"), legend("symbol", frame_anchor="bottom")], **by_seed)
 
     labels = sorted({l for l in own["budget_label"] if l.isdigit()}, key=int) + sorted({l for l in own["budget_label"] if not l.isdigit()})
@@ -205,7 +273,8 @@ def build():
                                                  num("own_self_tool_calls", "said calls", width=90), num("tool_calls", "calls", width=70)])]))
 
     sections.append(prebuilt())
-    return render(page, bar, sections, eps, own)
+    return render(page, bar(ep, filt), sections, "styx episodes", '<a href="questions.html">questions</a> — the filters above act on M, R, A, B, D, E and F; C has its own. '
+                  f'{len(eps)} episodes in {eps["run"].nunique()} runs; {len(own)} runs of ours. Hover a point for its episode; tables sort and filter by column.')
 
 
 def prebuilt():
@@ -224,18 +293,21 @@ def prebuilt():
                             width=900, height=560, margin_left=280, x_tick_rotate=-45, margin_bottom=90)])
 
 
-def render(page, bar, sections, eps, own):
+def render(page, bar, sections, name, nav, keyed=True):
+    """The page: the bar, links to its sections (by key, or by title where not `keyed`) and `nav`, and each section; a component
+    given with lines has them under it, as the repo defines what it draws."""
     inputs = lambda comps, cls: f'<details class="{cls}" open><summary>Filters</summary><div>' + "".join(f"<div>{page.fragment(c)}</div>" for c in comps) + "</div></details>"
-    parts = [inputs(bar, "bar"), f'<p class="nav">{" · ".join(f"<a href=#{k}>{k}</a>" for k, *_ in sections)} — the filters above act on A, B, D, E and F; C has its own. '
-             f'{len(eps)} episodes in {eps["run"].nunique()} runs; {len(own)} runs of ours. Hover a point for its episode; tables sort and filter by column.</p>']
+    shown = lambda c, lines=(): (f'<div class="defined">{page.fragment(c)}<ul class="defs">' + "".join(f"<li>{html.escape(l)}</li>" for l in lines) + "</ul></div>"
+                                 if lines else f"<div>{page.fragment(c)}</div>")
+    parts = [inputs(bar, "bar"), f'<p class="nav">{" · ".join(f"<a href=#{k}>{k if keyed else html.escape(t)}</a>" for k, t, *_ in sections)} — {nav}</p>']
     for key, title, note, ins, comps in sections:
-        parts.append(f'<section id="{key}"><h2>{key}. {html.escape(title)}</h2><p class="note">{html.escape(note)}</p>'
-                     + (inputs(ins, "filters") if ins else "") + '<div class="row">' + "".join(f"<div>{page.fragment(c)}</div>" for c in comps) + "</div></section>")
-    return PAGE.format(head=page.head(), body="\n".join(parts))
+        parts.append(f'<section id="{key}"><h2>{f"{key}. " if keyed else ""}{html.escape(title)}</h2>' + (f'<p class="note">{html.escape(note)}</p>' if note else "")
+                     + (inputs(ins, "filters") if ins else "") + '<div class="row">' + "".join(shown(*c) if isinstance(c, tuple) else shown(c) for c in comps) + "</div></section>")
+    return PAGE.format(name=name, head=page.head(), body="\n".join(parts))
 
 
 PAGE = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>styx episodes</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{name}</title>
 <style>
 body {{ margin: 0; padding: 0 16px 40px; background: #fcfcfb; color: #0b0b0b; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", Arial, sans-serif; }}
 .bar > div, .filters > div {{ display: flex; flex-wrap: wrap; gap: 4px 28px; align-items: flex-end; padding: 2px 0 8px; }}
@@ -248,7 +320,9 @@ h2 {{ font-size: 17px; margin: 0 0 4px; }}
 .note {{ color: #52514e; font-size: 13px; margin: 0 0 8px; max-width: 1100px; }}
 .row {{ display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }}
 .row > div {{ max-width: 100%; overflow-x: auto; }}
-@media (max-width: 800px) {{ body {{ padding: 0 10px 40px; }} section {{ scroll-margin-top: 50px; }} }}
+.defs {{ width: 0; min-width: 100%; margin: 6px 0 0; padding: 0; list-style: none; font: 11.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: #52514e; overflow-wrap: anywhere; }}
+.defs li {{ margin: 0 0 3px; }}
+@media (max-width: 800px) {{ body {{ padding: 0 10px 40px; }} section {{ scroll-margin-top: 50px; }} .row svg[class^="plot-"] {{ max-width: none; }} }}
 </style>
 {head}
 </head><body>
@@ -259,7 +333,11 @@ h2 {{ font-size: 17px; margin: 0 0 4px; }}
 
 
 if __name__ == "__main__":
-    os.makedirs(OUT, exist_ok=True)
-    with open(f"{OUT}/index.html", "w") as f:
-        f.write(build())
-    print(f"{OUT}/index.html", os.path.getsize(f"{OUT}/index.html"), "bytes")
+    from view import questions
+
+    out = sys.argv[1] if len(sys.argv) > 1 else OUT
+    os.makedirs(out, exist_ok=True)
+    for name, make in (("index.html", build), ("questions.html", questions.build)):
+        with open(f"{out}/{name}", "w") as f:
+            f.write(make())
+        print(f"{out}/{name}", os.path.getsize(f"{out}/{name}"), "bytes")
