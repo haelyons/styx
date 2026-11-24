@@ -57,6 +57,11 @@ def compact(df):
     return df.astype({c: "category" for c in df.columns if pd.api.types.is_string_dtype(df[c])}).reset_index(drop=True)
 
 
+def fits(name, left, right):
+    """The width of a plot whose title `name` sits over its frame, between margins `left` and `right`, without being cut."""
+    return left - right + 11 * len(name)
+
+
 def positive(df, *cols):
     """The rows a log axis can draw."""
     return df[(df[list(cols)] > 0).all(axis=1)].reset_index(drop=True)
@@ -121,19 +126,20 @@ def matrix(eps, filt):
 
     def counts(d):
         task, asked, models, jobs = d["task"].iloc[0], d["asked"].iloc[0], tidy.ordered(d), sorted(d["job"].unique())
+        name = f"{task} · {asked}"
         facets, rows_ = (dict(fx="gpu", fy="condition"), d["condition"].nunique()) if task == "forecast" else ({}, 1)
         data = Data.from_dataframe(compact(d[BAR + ["episode"]]))
         return plot(cell(data, x="job", y="model", fill=count(), filter_by=filt, inset=0.5, **facets),
                     text(data, x="job", y="model", text=count(), filter_by=filt, fill="#0b0b0b", **facets),
-                    title=title(f"{task} · {asked}", margin_top=40), x_domain=jobs, y_domain=models, x_label=None, y_label=None, fx_label=None, fy_label=None,
+                    title=title(name, margin_top=40), x_domain=jobs, y_domain=models, x_label=None, y_label=None, fx_label=None, fy_label=None,
                     x_tick_rotate=-30 if task == "post" else 0, margin_left=250, margin_bottom=70 if task == "post" else 30, margin_right=60,
-                    width=max(310 + 30 * len(jobs) * d["gpu"].nunique(), 9 * len(f"{task} · {asked}") + 60), height=18 * len(models) * rows_ + 120, color_scale="log", color_range=["#e3edfa", "#6f9fe0"])
+                    width=max(310 + 30 * len(jobs) * d["gpu"].nunique(), fits(name, 250, 60)), height=18 * len(models) * rows_ + 120, color_scale="log", color_range=["#e3edfa", "#6f9fe0"])
 
     every = Data.from_dataframe(compact(eps[BAR + ["episode"]].assign(answered=eps["answered"].astype(float))))  # DuckDB sums no booleans
     cols = [num(c, width=w) for c, w in zip(KEY, (75, 300, 80, 250, 80, 65, 120))] + [column({"count": "episode"}, label="scored", width=75), column({"sum": "answered"}, label="answered", width=100)]
     return ("M", "What was run: an episode's task, the keys its prompt asked, CLI, model, condition, GPU and job", "", [],
-            [counts(d) for _, d in sorted(eps.groupby(["task", "asked"]), key=lambda g: (g[0][0], g[1]["run"].min()))]
-            + [(rows(every, filt, cols, width=1220), ["fill, text, scored = count(*)", "answered = sum(answered)", *tidy.defined(*KEY, "answered")])])
+            [([counts(d)], []) for _, d in sorted(eps.groupby(["task", "asked"]), key=lambda g: (g[0][0], g[1]["run"].min()))]
+            + [([rows(every, filt, cols, width=1220)], ["fill, text, scored = count(*)", "answered = sum(answered)", *tidy.defined(*KEY, "answered")])])
 
 
 def at_budgets(eps, filt):
@@ -145,7 +151,7 @@ def at_budgets(eps, filt):
     def per(j, data, f, s, y, ours, label):
         g, o = positive(f, y), s[s[ours] > 0]
         epochs, dom = sorted(set(f["epochs"]) | set(o["epochs"])), span(g[y], o[ours])
-        return plot(line(data, x="epochs", y=y, z="uid", fx="gpu", stroke="harness", stroke_opacity=0.35, filter_by=filt),
+        return plot(line(data, x="epochs", y=y, z="uid", fx="gpu", stroke="harness", stroke_opacity=0.35, sort={"channel": "x"}, filter_by=filt),
                     dot(data, x="epochs", y=y, fx="gpu", fill="harness", r=2, fill_opacity=0.5, filter_by=filt, channels=WHO | {"epochs": "epochs", "said": y}),
                     dot(Data.from_dataframe(compact(o[["gpu", "epochs", ours]])), x="epochs", y=ours, fx="gpu", fill="black", r=2.5),
                     title=named(j), x_scale="log", x_domain=[epochs[0] / 1.3, epochs[-1] * 1.3], x_ticks=epochs, x_tick_format="~g", x_label="epochs",
@@ -161,8 +167,8 @@ def at_budgets(eps, filt):
     table_cols = WHO_COLS + [num("condition"), num("gpu", width=65), num("job", width=55), num("epochs", width=85)] + [
         num(c, fmt=".4~f" if "score" in c else None, width=190) for c in said] + [num("ours_median_s", fmt=".1f", width=140), num("ours_median_score", fmt=".4~f", width=160)]
     return ("R", "Forecasts at each budget, as rows: what an episode said a job's run takes and scores at each number of epochs, beside the medians of ours", "", [],
-            plots + [(rows(Data.from_dataframe(compact(b[cols])), filt, table_cols, width=1220),
-                      [*tidy.defined("epochs", *said, "ours_median_s", "ours_median_score"), f"black dots: {tidy.source('seeds', tidy.seeds)}"])])
+            [(plots + [rows(Data.from_dataframe(compact(b[cols])), filt, table_cols, width=1220)],
+              [*tidy.defined("epochs", *said, "ours_median_s", "ours_median_score"), f"black dots: {tidy.source('seeds', tidy.seeds)}"])])
 
 
 def build():
@@ -294,15 +300,17 @@ def prebuilt():
 
 
 def render(page, bar, sections, name, nav, keyed=True):
-    """The page: the bar, links to its sections (by key, or by title where not `keyed`) and `nav`, and each section; a component
-    given with lines has them under it, as the repo defines what it draws."""
+    """The page: the bar, links to its sections (by key, or by title where not `keyed`) and `nav`, and each section. A component, or
+    a list of them, given with lines is a block of its own row: the components side by side, and under them the lines, as the repo
+    defines what they draw."""
     inputs = lambda comps, cls: f'<details class="{cls}" open><summary>Filters</summary><div>' + "".join(f"<div>{page.fragment(c)}</div>" for c in comps) + "</div></details>"
-    shown = lambda c, lines=(): (f'<div class="defined">{page.fragment(c)}<ul class="defs">' + "".join(f"<li>{html.escape(l)}</li>" for l in lines) + "</ul></div>"
-                                 if lines else f"<div>{page.fragment(c)}</div>")
+    shown = lambda c: f"<div>{page.fragment(c)}</div>"
+    block = lambda cs, lines: ('<div class="block"><div class="row">' + "".join(map(shown, cs if isinstance(cs, list) else [cs])) + "</div>"
+                               + ('<ul class="defs">' + "".join(f"<li>{html.escape(l)}</li>" for l in lines) + "</ul>" if lines else "") + "</div>")
     parts = [inputs(bar, "bar"), f'<p class="nav">{" · ".join(f"<a href=#{k}>{k if keyed else html.escape(t)}</a>" for k, t, *_ in sections)} — {nav}</p>']
     for key, title, note, ins, comps in sections:
         parts.append(f'<section id="{key}"><h2>{f"{key}. " if keyed else ""}{html.escape(title)}</h2>' + (f'<p class="note">{html.escape(note)}</p>' if note else "")
-                     + (inputs(ins, "filters") if ins else "") + '<div class="row">' + "".join(shown(*c) if isinstance(c, tuple) else shown(c) for c in comps) + "</div></section>")
+                     + (inputs(ins, "filters") if ins else "") + '<div class="row">' + "".join(block(*c) if isinstance(c, tuple) else shown(c) for c in comps) + "</div></section>")
     return PAGE.format(name=name, head=page.head(), body="\n".join(parts))
 
 
@@ -320,7 +328,8 @@ h2 {{ font-size: 17px; margin: 0 0 4px; }}
 .note {{ color: #52514e; font-size: 13px; margin: 0 0 8px; max-width: 1100px; }}
 .row {{ display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }}
 .row > div {{ max-width: 100%; overflow-x: auto; }}
-.defs {{ width: 0; min-width: 100%; margin: 6px 0 0; padding: 0; list-style: none; font: 11.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: #52514e; overflow-wrap: anywhere; }}
+.row > .block {{ flex: 0 0 100%; }}
+.defs {{ margin: 6px 0 0; padding: 0; list-style: none; font: 11.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: #52514e; overflow-wrap: anywhere; }}
 .defs li {{ margin: 0 0 3px; }}
 @media (max-width: 800px) {{ body {{ padding: 0 10px 40px; }} section {{ scroll-margin-top: 50px; }} .row svg[class^="plot-"] {{ max-width: none; }} }}
 </style>
