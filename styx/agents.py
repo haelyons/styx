@@ -51,7 +51,7 @@ def wall(gb):
 
 WALL, CAGE = wall(2), wall(8) + ["taskset", "-c", os.environ.get("STYX_CORES", "0-3")]
 CPU_ENV = f"{ROOT}/cpu-env"
-# Models we serve ourselves (serve.yaml), by a name of ours: {"h100": "http://127.0.0.1:8001/v1"}.
+# Models we serve (serve.yaml), each by the name we give it: {"h100": "http://127.0.0.1:8001/v1"}.
 # OpenCode reaches one as <name>/<model>.
 ENDPOINTS = json.loads(os.environ.get("STYX_ENDPOINTS", "{}"))
 
@@ -127,9 +127,9 @@ def answer(agent, ep):
             tool_calls=calls, output_tokens=sum(u["outputTokens"] for u in use), cached_tokens=sum(u["cacheReadInputTokens"] for u in use),
             input_tokens=sum(u["inputTokens"] + u["cacheCreationInputTokens"] for u in use), cost_usd=last.get("total_cost_usd"))
     if agent == "opencode":
-        said = [e["part"] for e in events if e.get("type") == "text"]
+        texts = [e["part"] for e in events if e.get("type") == "text"]
         steps = [e["part"].get("tokens") or {} for e in events if e.get("type") == "step_finish"]
-        text = "".join(p["text"] for p in said if p["messageID"] == said[-1]["messageID"])
+        text = "".join(p["text"] for p in texts if p["messageID"] == texts[-1]["messageID"])
         return text, dict(
             tool_calls=sum(e.get("type") == "tool_use" for e in events), output_tokens=sum(t.get("output", 0) + t.get("reasoning", 0) for t in steps),
             cached_tokens=sum((t.get("cache") or {}).get("read", 0) for t in steps), input_tokens=sum(t.get("input", 0) for t in steps),
@@ -255,12 +255,12 @@ def messages(ep):
         elif kind == "item.completed" and item.get("type") in ("agent_message", "reasoning"):  # Codex
             turn(item["id"], at).content.append(ContentText(text=item.get("text") or "") if item["type"] == "agent_message" else ContentReasoning(reasoning=item.get("text") or ""))
         elif kind in ("item.started", "item.completed") and item.get("id") and item.get("type") not in ("agent_message", "reasoning"):
-            ours = item["type"] == "mcp_tool_call"  # a tool of styx/files.py
+            mcp = item["type"] == "mcp_tool_call"  # a tool of styx/files.py
             if item["id"] not in called:
-                call(item["id"], at, item["id"], item["tool"] if ours else item["type"],
-                     item.get("arguments") if ours else {k: v for k, v in item.items() if k not in ("id", "type", "status", "aggregated_output", "exit_code")})
+                call(item["id"], at, item["id"], item["tool"] if mcp else item["type"],
+                     item.get("arguments") if mcp else {k: v for k, v in item.items() if k not in ("id", "type", "status", "aggregated_output", "exit_code")})
             if kind == "item.completed":
-                result(item["id"], at, (item.get("result") or {}).get("content") if ours else item.get("aggregated_output") or "", exit_code=item.get("exit_code"), status=item.get("status"))
+                result(item["id"], at, (item.get("result") or {}).get("content") if mcp else item.get("aggregated_output") or "", exit_code=item.get("exit_code"), status=item.get("status"))
         elif kind in ("text", "reasoning"):  # OpenCode
             turn(part.get("messageID"), at).content.append((ContentText if kind == "text" else ContentReasoning)(**{kind: part.get("text") or ""}))
         elif kind == "tool_use":  # one event when the call ends
@@ -363,16 +363,16 @@ async def run(agent, model, prompt, files, ep, minutes, tools="pool", hold=0):
         os.makedirs(f"{ep}/home/.codex")
         shutil.copy(LOGIN, f"{ep}/home/.codex/auth.json")
         env.update(HOME=f"{ep}/home")
-    if agent == "opencode":  # its account where there is one, and a config of ours in place of the user's
+    if agent == "opencode":  # its account where there is one, and our config in place of the user's
         os.makedirs(f"{ep}/home")
         if os.path.exists(f"{HOME}/.local/share/opencode/opencode.db"):
             account(f"{ep}/home/opencode.db")
         allow = {"*": "allow", "webfetch": "deny", "websearch": "deny", **({} if tools != "none" else {"bash": "deny", "edit": "deny"})}
         name, _, served = model.partition("/")
-        ours = {name: dict(npm="@ai-sdk/openai-compatible", options=dict(baseURL=ENDPOINTS[name], apiKey="none"),
-                           models={served: dict(tool_call=True, reasoning=True, limit=dict(context=131072, output=32768))})} if name in ENDPOINTS else {}
+        provider = {name: dict(npm="@ai-sdk/openai-compatible", options=dict(baseURL=ENDPOINTS[name], apiKey="none"),
+                               models={served: dict(tool_call=True, reasoning=True, limit=dict(context=131072, output=32768))})} if name in ENDPOINTS else {}
         with open(f"{ep}/opencode.json", "w") as f:
-            json.dump(dict(autoupdate=False, share="disabled", permission=allow, provider=ours), f)
+            json.dump(dict(autoupdate=False, share="disabled", permission=allow, provider=provider), f)
         env.update(OPENCODE_CONFIG=f"{ep}/opencode.json")
     cmd = (CAGE if tools == "cpu" else WALL) + (jail(agent, ep) if agent in OPEN else []) + [exe, *globals()[agent](model, prompt, ep, tools != "none")]
     t = time.time()
@@ -439,9 +439,9 @@ async def before(agent, model, prompt, ep):
     return numbers(r["answer"], SELF)
 
 
-def own(said, run):
-    """ln(said / actual) for the agent's forecast of its own seconds, output tokens and tool calls,
+def compared(forecast, run):
+    """ln(forecast / actual) for the agent's forecast of its own seconds, output tokens and tool calls,
     and whether each actual fell between its 10th and 90th percentile."""
     actual = dict(SELF_SECONDS=run["agent_s"], SELF_OUTPUT_TOKENS=run["output_tokens"], SELF_TOOL_CALLS=run["tool_calls"])
-    off = {f"{k.lower()}_err": math.log(said[k] / a) if said[k] > 0 and a > 0 else math.nan for k, a in actual.items()}
-    return dict(off, **{f"{k.lower()}_in": said[f"{k}_LOW"] <= a <= said[f"{k}_HIGH"] for k, a in actual.items()})
+    off = {f"{k.lower()}_err": math.log(forecast[k] / a) if forecast[k] > 0 and a > 0 else math.nan for k, a in actual.items()}
+    return dict(off, **{f"{k.lower()}_in": forecast[f"{k}_LOW"] <= a <= forecast[f"{k}_HIGH"] for k, a in actual.items()})

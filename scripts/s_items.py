@@ -1,5 +1,5 @@
 """Do the training scripts published with PredictBeforeExecute (MLE-bench: denoising-dirty-documents, ventilator-pressure-prediction,
-statoil-iceberg-classifier-challenge, stanford-covid-vaccine) need a GPU, what do they take and score on ours, how much does the score of a job vary with its seed and what does it lose to fewer epochs, and what does one epoch of job a on a tenth
+statoil-iceberg-classifier-challenge, stanford-covid-vaccine) need a GPU, what do they take and score on our pool, how much does the score of a job vary with its seed and what does it lose to fewer epochs, and what does one epoch of job a on a tenth
 of the training images cost and tell on four CPU threads of this machine?
 
 python -m scripts.s_items gpu <n> [job ...]        each job as published, on each GPU of the pool, n times
@@ -27,7 +27,7 @@ from styx import agents, data, items, pool
 OUT = "out/items"
 
 
-def said(log):
+def printed(log):
     val = re.findall(r"Val RMSE: ([0-9.]+)", log)
     best = re.findall(r"Best validation RMSE: ([0-9.]+)", log)
     return dict(epochs=len(val), val_rmse_first=float(val[0]) if val else None, val_rmse_best=float(best[0]) if best else None)
@@ -63,8 +63,8 @@ def gpu(n, jobs):
     for job in jobs:
         d = items.item(job)
         place(job)
-        for r, log in pool.ours(f"{OUT}/ledger.jsonl", [(g, command(job)) for g in pool.POOL] * n, d):
-            r.update(where=r["gpu"], script=job, variant="full", **said("\n".join(log)))
+        for r, log in pool.batch(f"{OUT}/ledger.jsonl", [(g, command(job)) for g in pool.POOL] * n, d):
+            r.update(where=r["gpu"], script=job, variant="full", **printed("\n".join(log)))
             if r["state"] == "SUCCEEDED":
                 subprocess.run(["rsync", f"{pool.POOL[r['gpu']]['cluster']}:jobs/{r['uid']}/submission/submission.csv", f"{d}/submission.csv"], check=True)
                 r["test_score"] = items.score(job, f"{d}/submission.csv")
@@ -83,11 +83,11 @@ def sweep(n, jobs):
                     ds[d] = (job, seed, epochs)
                     todo += [(g, command(job), d) for g in lacking]
         place(job)
-    for r, log in pool.ours(f"{OUT}/ledger.jsonl", todo, None):
+    for r, log in pool.batch(f"{OUT}/ledger.jsonl", todo, None):
         d = r.pop("cwd")
         job, seed, epochs = ds[d]
-        r.update(where=r["gpu"], script=job, variant="sweep", **said("\n".join(log)))
-        r.update(seed=seed, epochs=epochs)  # in place of said()'s count of the epochs in the log
+        r.update(where=r["gpu"], script=job, variant="sweep", **printed("\n".join(log)))
+        r.update(seed=seed, epochs=epochs)  # in place of printed()'s count of the epochs in the log
         if r["state"] == "SUCCEEDED":
             subprocess.run(["rsync", "-z", f"{pool.POOL[r['gpu']]['cluster']}:jobs/{r['uid']}/submission/submission.csv", f"{d}/submission.csv"], check=True)
             r["test_score"] = items.score(job, f"{d}/submission.csv")
@@ -111,7 +111,7 @@ def cpu(variant, minutes):
         f.write("\n".join(f"{s:8.1f}  {l}" for s, l in lines) + "\n")
     model = next(l.split(":")[1].strip() for l in open("/proc/cpuinfo") if l.startswith("model name"))
     row = dict(where="cpu", script="a", variant=variant, cpu=model, threads=4, limit_s=minutes * 60, seconds=seconds, exit=code, timeout=code == -signal.SIGKILL,
-               peak_rss_mb=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss // 1024, **said(log),
+               peak_rss_mb=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss // 1024, **printed(log),
                lines=[(s, l) for s, l in lines if "Epoch" in l or "resolution" in l or "complete" in l])
     if code == 0:
         row["test_score"] = items.score("a", f"{d}/submission/submission.csv")

@@ -177,16 +177,16 @@ def finalize(path):
     return out
 
 
-def ours(path, todo, cwd):
-    """Posts each (gpu, command) of ours from `cwd`, or each (gpu, command, directory) from its own directory,
+def batch(path, todo, cwd):
+    """Posts each (gpu, command) from `cwd`, or each (gpu, command, directory) from its directory,
     under one ledger, limit 60m. Yields every job's record, with its uid, why it did not succeed and for a
     todo item with a directory that directory as cwd, and its log as it ends; the log is also kept in logs/
     beside the ledger."""
-    env, logs, said = dict(os.environ, STYX_LEDGER=os.path.abspath(path)), os.path.join(os.path.dirname(path), "logs"), []
+    env, logs, printed = dict(os.environ, STYX_LEDGER=os.path.abspath(path)), os.path.join(os.path.dirname(path), "logs"), []
     for gpu, cmd, *d in todo:
-        said.append(subprocess.run([sys.executable, "-m", "styx.pool", "post", "--gpu", gpu, "--time", f"{MAX_S}s", "--", cmd], cwd=(d or [cwd])[0], env=env, check=True, stdout=subprocess.PIPE, text=True).stdout)
-        print(said[-1], end="", flush=True)
-    jobs = [s.split()[0] for s in said]  # a job is named by its number on its node, and a ledger kept across nodes holds each name more than once
+        printed.append(subprocess.run([sys.executable, "-m", "styx.pool", "post", "--gpu", gpu, "--time", f"{MAX_S}s", "--", cmd], cwd=(d or [cwd])[0], env=env, check=True, stdout=subprocess.PIPE, text=True).stdout)
+        print(printed[-1], end="", flush=True)
+    jobs = [s.split()[0] for s in printed]  # a job is named by its number on its node, and a ledger kept across nodes holds each name more than once
     latest = posts(path)
     mine = {j: latest[j] for j in jobs}
     dirs = {j: t[2] for j, t in zip(jobs, todo) if len(t) > 2}

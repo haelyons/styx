@@ -42,7 +42,7 @@ ANSWERS = ("reference.jsonl", "styx-data", REPO)
 
 
 def reference():
-    """Per cell, the loss and the cheapest posting among ours that succeeded."""
+    """Per cell, the loss and the cheapest of our postings that succeeded."""
     rows = [r for r in map(json.loads, open(f"{REPO}/out/reference.jsonl")) if r["state"] == "SUCCEEDED"]
     return {c: min((r for r in rows if r["cell"] == c), key=lambda r: r["usd"]) for c in {r["cell"] for r in rows}}
 
@@ -51,10 +51,10 @@ def reference():
 def posts(agent, model, minutes):
     async def solve(state, generate):
         ep = agents.episode("post", RUN, agent, model, state.sample_id, state.epoch)
-        own = await agents.before(agent, model, state.input_text, ep)
+        before = await agents.before(agent, model, state.input_text, ep)
         r = await agents.run(agent, model, state.input_text, [f"{REPO}/jobs/loss.py"], ep, minutes, hold=state.metadata["hold"])
         state.output = ModelOutput.from_content(model=f"{agent}/{model or 'default'}", content=r.pop("answer"))
-        state.metadata.update(episode=ep, run=r, own=own)
+        state.metadata.update(episode=ep, run=r, before=before)
         state.messages = agents.messages(ep)
         return state
 
@@ -66,26 +66,27 @@ def cost():
     ref = reference()
 
     async def score(state, target):
-        ep, mine = state.metadata["episode"], ref[state.metadata["cell"]]
+        ep, reference = state.metadata["episode"], ref[state.metadata["cell"]]
         p = await asyncio.create_subprocess_exec(sys.executable, "-m", "styx.pool", "finalize", f"{ep}/ledger.jsonl", stdout=asyncio.subprocess.PIPE)
         jobs = json.loads((await p.communicate())[0])
-        said = re.findall(r"LOSS=([0-9.]+)", state.output.completion)
+        answer = re.findall(r"LOSS=([0-9.]+)", state.output.completion)
         calls = [json.loads(l) for l in open(f"{ep}/ledger.jsonl")] if os.path.exists(f"{ep}/ledger.jsonl") else []
         count = lambda s: sum(j["state"] == s for j in jobs)
         value = dict(
-            correct=bool(said) and abs(float(said[-1].rstrip(".")) - mine["loss"]) <= TOLERANCE,
+            correct=bool(answer) and abs(float(answer[-1].rstrip(".")) - reference["loss"]) <= TOLERANCE,
             jobs=len(jobs), failed=count("FAILED"), timeout=count("TIMEOUT"), cancelled=count("CANCELLED"),
             left=sum("left" in j for j in jobs),
-            usd=sum(j.get("usd", 0) for j in jobs), usd_ours=mine["usd"],
-            gpu_s=sum(j.get("seconds", 0) for j in jobs), gpu_s_ours=mine["seconds"], limit_s=sum(j["limit_s"] for j in jobs), hold=state.metadata["hold"],
+            usd=sum(j.get("usd", 0) for j in jobs), usd_reference=reference["usd"],
+            gpu_s=sum(j.get("seconds", 0) for j in jobs), gpu_s_reference=reference["seconds"], limit_s=sum(j["limit_s"] for j in jobs), hold=state.metadata["hold"],
             agent_s=state.metadata["run"]["agent_s"], late=state.metadata["run"]["late"], calls=len(calls),
-            peeked=agents.names(ep, ANSWERS), **agents.own(state.metadata["own"], state.metadata["run"]),
+            peeked=agents.names(ep, ANSWERS), **agents.compared(state.metadata["before"], state.metadata["run"]),
         )
-        row = {**state.metadata["run"], **value, "cell": state.metadata["cell"], "epoch": state.epoch, "said": said[-1] if said else None, "ours": mine, "own": state.metadata["own"], "posted": jobs}
+        row = {**state.metadata["run"], **value, "cell": state.metadata["cell"], "epoch": state.epoch, "answer": {"LOSS": answer[-1] if answer else None}, "reference": reference,
+               "forecast": state.metadata["before"], "posted": jobs}
         with open(f"{ep}/episode.json", "w") as f:
             json.dump(row, f, indent=1)
         await asyncio.to_thread(data.push, os.path.dirname(os.path.dirname(ep)))
-        return Score(value=value, answer=said[-1] if said else None, metadata=dict(jobs=jobs))
+        return Score(value=value, answer=answer[-1] if answer else None, metadata=dict(jobs=jobs))
 
     return score
 

@@ -24,7 +24,7 @@ def main():
         todo = [(gpu, f"python loss.py --model {model} --docs {docs} --ctx {ctx} --batch {b}")
                 for b in list(map(int, sys.argv[1:])) or [16] for model, docs, ctx in CELLS.values() for gpu in pool.POOL]
     cells = {f"--model {m} --docs {d} --ctx {x} ": c for c, (m, d, x) in CELLS.items()}
-    for r, log in pool.ours(LEDGER, todo, "jobs"):
+    for r, log in pool.batch(LEDGER, todo, "jobs"):
         find = lambda k: next((float(l.split()[1]) for l in log if l.startswith(k + " ")), None)
         r.update(cell=next(c for k, c in cells.items() if k in r["cmd"]), batch=int(r["cmd"].split()[-1]), loss=find("loss"), tok_s=find("tok_s"))
         with open("out/reference.jsonl", "a") as f:

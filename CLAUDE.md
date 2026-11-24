@@ -13,7 +13,7 @@ and score; before any episode, what its own run will take.
 ## Code
 - `styx/` is the core. `jobs/` holds the workloads handed to agents. `tasks/` holds Inspect tasks.
 - `scripts/` holds what we run ourselves: our postings and runs that episodes are scored against, and Inspect Scout scans of the transcripts.
-- `view/` builds two pages with Inspect Viz: `index.html`, every episode and every run of ours as the data holds them, and `questions.html`, the questions we keep asking, by model. A page holds no prose: under a plot stands what the repo says each variable is. `python -m view.build`, then serve `view/dist/`. That output is never committed.
+- `view/` builds two pages with Inspect Viz: `index.html`, every agent and every run we made of the jobs as the data holds them, and `questions.html`, the questions of `view/questions.py`'s docstring, each with what the agent was told and its plots by model. A page holds no prose: a plot's heading is its variable and expression, under it stands what the repo says each variable is, and a prompt is shown from the code or from an agent's stored `prompt.txt`. `python -m view.build`, then serve `view/dist/`. That output is never committed.
 - `pool.yaml` is a GPU node of the pool, `bench.yaml` a machine whose CPUs stand in for an agent's own,
   `serve.yaml` an open-weights model behind vLLM. `styx/slow.py` gives a served model a second speed.
 - A task's docstring is its question, nothing else. Its constants stay in it.
@@ -42,6 +42,7 @@ and score; before any episode, what its own run will take.
 - Every run uploads its results to the HF dataset `hal2k/styx-data` as `<task>/<date>-<commit>/`. No prose.
 - Episodes go up a run at a time, at most one commit in 15 minutes from a machine; `python -m styx.data` sends what is left. It also sends `episodes.jsonl`, one row per episode of every run, and `transcripts/`, an Inspect Scout database of what every agent wrote, reasoned and ran.
 - `styx/data.py` is the only way there. It replaces every value of `.env` with its name.
+- An agent's numbers are its `forecast`, the limit it asks its `request`, its `answer` on the post task; what we measured is `actual`, our own posting `reference`. A stored `episode.json` is read only through `styx.data.episode`, which gives a file from before these words today's keys.
 
 ## Limits
 - Never print credentials.

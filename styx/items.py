@@ -202,12 +202,12 @@ def truth(rows, gpus):
     `runs` those runs, `seeds` the sweep's at each of the job's budgets it has, `truth` the seeds a forecast's test score is scored
     against, the sweep's at the job's full budget if it has any, else the runs as published, and `full` every run at the job's full
     budget, as published and in the sweep, which a forecast's seconds and peak GPU memory are scored against."""
-    ok, ours = [r for r in rows if r.get("state") == "SUCCEEDED"], {}
+    ok, out = [r for r in rows if r.get("state") == "SUCCEEDED"], {}
     for j in BUDGETS:
         for g in gpus:
             runs = [r for r in ok if (r["script"], r["gpu"], r.get("variant")) == (j, g, "full")]
             sweep = {e: [r for r in ok if (r["script"], r["gpu"], r.get("variant"), r.get("epochs")) == (j, g, "sweep", e)] for e, _, _ in BUDGETS[j]}
             if runs:
                 last = sweep[BUDGETS[j][-1][0]]
-                ours[j, g] = dict(runs=runs, seeds={e: s for e, s in sweep.items() if s}, truth=last or runs, full=runs + last)
-    return ours
+                out[j, g] = dict(runs=runs, seeds={e: s for e, s in sweep.items() if s}, truth=last or runs, full=runs + last)
+    return out

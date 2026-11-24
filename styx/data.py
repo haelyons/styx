@@ -9,6 +9,7 @@ import json
 import math
 import os
 import shutil
+import statistics
 import tempfile
 import time
 
@@ -19,7 +20,7 @@ DATASET = "hal2k/styx-data"
 ENV = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
 MAX_BYTES = 50e6
 ROOT = os.path.expanduser("~/.cache/styx")
-# What of an episode is published: what it said and did, and the text files it wrote.
+# What of an episode is published: what it wrote and did, and the text files it wrote.
 KEEP = ("episode.json", "ledger.jsonl", "prompt.txt", "transcript.jsonl", "clock.txt", "exec.jsonl", "stderr.txt", "answer.txt", "before/prompt.txt", "before/transcript.jsonl",
         "before/clock.txt", "before/exec.jsonl", "before/answer.txt", "work/*.py", "work/*.sh", "work/*.txt", "work/*.json", "work/*.log", "work/*.md")
 
@@ -72,9 +73,30 @@ def push(run, every=900):
             print(f"not pushed: {str(e)[:200]}", flush=True)
 
 
+def episode(path):
+    """An episode.json in today's keys: `forecast` what the agent forecast, of the job and of its own run, `request` the time limit
+    it requested, `answer` its answer, and `actual` the runs of ours it was scored against or, on the post task, `reference` the
+    cheapest posting of ours. A file from before these keys holds the first three under `said` and `own`, and either of the last
+    under `ours`; one from before there were many tasks holds a TEST_SCORE as TEST_RMSE. Every reader of an episode.json reads it here."""
+    row = json.load(open(path))
+    if "said" not in row:
+        return row
+    said, own, ours = row.pop("said"), row.pop("own", None) or {}, row.pop("ours")
+    rmse = lambda d: {k.replace("TEST_RMSE", "TEST_SCORE").replace("test_rmse", "test_score").replace("rmse_", "score_"): v for k, v in d.items()}
+    if isinstance(said, dict):  # the forecast task
+        request = {"REQUEST_S": said.pop("REQUEST_S")} if "REQUEST_S" in said else {}
+        return {**rmse(row), "forecast": {**rmse(said), **own}, "request": request, "actual": rmse(ours)}
+    return {**{k.replace("_ours", "_reference"): v for k, v in row.items()}, "answer": {"LOSS": said}, "forecast": own, "reference": ours}
+
+
+# What table() keeps of the first job an agent posted, by its key in a job's record of styx.pool.
+FIRST = dict(gpu="the GPU it asked for", limit_s="the time limit it asked for, in seconds", state="the state it ended in", seconds="the seconds it ran", cmd="its command")
+
+
 def table():
-    """Writes episodes.jsonl, one row per scored episode of every run: where it is, its own numbers,
-    its first job, how its seconds went, and for a forecast the signed ln(said / ours) of its runtime, memory and test score."""
+    """Writes episodes.jsonl, one row per scored episode of every run: where it is, its numbers (episode()), the first job it posted
+    (FIRST), the median of the actual runs at each smaller budget, how its seconds went, and for a forecast the signed
+    ln(forecast / actual) of its runtime, memory and test score."""
     from styx import agents
 
     os.makedirs(f"{ROOT}/table", exist_ok=True)
@@ -82,17 +104,19 @@ def table():
         for scored in sorted(glob.glob(f"{ROOT}/*/*-*/*/*/episode.json")):
             ep = os.path.dirname(scored)
             task, run, agent, sample = ep.split("/")[-4:]
-            row, flat = json.load(open(scored)), dict(task=task, run=run, agent=agent, episode=sample)
+            row, flat = episode(scored), dict(task=task, run=run, agent=agent, episode=sample)
             for k, v in row.items():
-                if isinstance(v, dict):
+                if k == "seeds":
+                    flat.update({f"actual.{q.replace('score', 'test_score')}": statistics.median(x) for q, x in v.items() if "_e" in q and x})
+                elif isinstance(v, dict):
                     flat.update({f"{k}.{q}": x for q, x in v.items() if not isinstance(x, (dict, list))})
                 elif k == "posted":
-                    flat.update({f"first.{q}": v[0].get(q) for q in ("gpu", "limit_s", "state", "seconds", "cmd") if v})
+                    flat.update({f"first.{q}": v[0].get(q) for q in FIRST if v})
                 else:
                     flat[k] = v
-            for k, a, b in (("runtime_ln", "said.RUNTIME_S", "ours.seconds"), ("memory_ln", "said.PEAK_GPU_MB", "ours.peak_gpu_mb"), ("score_ln", "said.TEST_SCORE", "ours.test_score")):
-                if "said" in row:
-                    x, y = (flat.get(n, flat.get(n.replace("TEST_SCORE", "TEST_RMSE").replace("test_score", "test_rmse"))) for n in (a, b))  # episodes from before there were many tasks have the RMSE
+            for k, a, b in (("runtime_ln", "forecast.RUNTIME_S", "actual.seconds"), ("memory_ln", "forecast.PEAK_GPU_MB", "actual.peak_gpu_mb"), ("score_ln", "forecast.TEST_SCORE", "actual.test_score")):
+                if "actual" in row:
+                    x, y = flat.get(a), flat.get(b)
                     flat[k] = math.log(x / y) if (x or 0) > 0 and (y or 0) > 0 else None
             out.write(json.dumps({**flat, **(agents.spent(ep) if os.path.exists(f"{ep}/clock.txt") else {})}) + "\n")  # the first runs kept no clock
 
